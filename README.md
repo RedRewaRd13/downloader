@@ -60,4 +60,4 @@
 موفق باشید.
 
 <a href="https://avasam.ir" target="_blank" rel="do-follow follow sponsered">🌱 avasam.ir  </a>
-- [https___youtube_com (20260501_145205)](pages/youtube.com/https___youtube_com/20260501_145205/index.md) — 5 media files
+
