@@ -51,6 +51,10 @@ jobs:
           SPLIT_THRESHOLD_MB=90
           SPLIT_THRESHOLD_BYTES=$(( SPLIT_THRESHOLD_MB * 1024 * 1024 ))
 
+          REPO_OWNER="${{ github.repository_owner }}"
+          REPO_NAME="${{ github.event.repository.name }}"
+          BRANCH="${GITHUB_REF_NAME}"
+
           echo "AVASAM (https://avasam.ir) - Downloading with mode: $MODE"
           echo "Split threshold: $SPLIT_THRESHOLD_MB MB (automatic)"
           if [ -n "$ZIP_PASSWORD" ]; then
@@ -128,30 +132,43 @@ jobs:
             local FOLDER_NAME=$(get_unique_folder "downloads" "$BASENAME_NO_EXT")
             mkdir -p "downloads/$FOLDER_NAME"
             {
-              echo "========================================================"
-              echo "  AVASAM Download Error Report"
-              echo "  https://avasam.ir"
-              echo "========================================================"
+              echo "# ${FILENAME} - Download Failed"
               echo ""
-              echo "File: $FILENAME"
-              echo "URL: $URL"
-              echo "Date: $(date '+%Y-%m-%d %H:%M:%S UTC')"
+              echo "---"
               echo ""
-              echo "ERROR:"
+              echo "## Download Information"
+              echo ""
+              echo "| Property | Value |"
+              echo "|----------|-------|"
+              echo "| **File** | \`${FILENAME}\` |"
+              echo "| **URL** | ${URL} |"
+              echo "| **Date** | $(date '+%Y-%m-%d %H:%M:%S UTC') |"
+              echo "| **Status** | **FAILED** |"
+              echo ""
+              echo "---"
+              echo ""
+              echo "## Error Details"
+              echo ""
+              echo "\`\`\`"
               echo "$ERROR_MSG"
+              echo "\`\`\`"
               echo ""
-              echo "========================================================"
-              echo "  Possible Solutions:"
-              echo "========================================================"
+              echo "---"
+              echo ""
+              echo "## Possible Solutions"
+              echo ""
               echo "- Check if the URL is correct and accessible"
               echo "- The file may have been removed or moved"
               echo "- The server may require authentication"
               echo "- For SourceForge: Try using the direct download link"
               echo "- Some servers block automated downloads (403 Forbidden)"
               echo "- Try again later if it is a temporary server issue"
-              echo "========================================================"
-            } > "downloads/$FOLDER_NAME/ERROR.txt"
-            echo "Error file created: downloads/$FOLDER_NAME/ERROR.txt"
+              echo ""
+              echo "---"
+              echo ""
+              echo "*This tool created by [avasam.ir](https://avasam.ir)*"
+            } > "downloads/$FOLDER_NAME/README.md"
+            echo "Error file created: downloads/$FOLDER_NAME/README.md"
           }
 
           download_with_retry() {
@@ -230,6 +247,44 @@ jobs:
               else
                 zip -j "downloads/$FOLDER_NAME/${ARCHIVE_NAME}.zip" tmp_downloads/*
               fi
+
+              # Create README.md for zip mode
+              ZIP_SIZE=$(stat -c%s "downloads/$FOLDER_NAME/${ARCHIVE_NAME}.zip")
+              ZIP_SIZE_MB=$(echo "scale=2; $ZIP_SIZE / 1024 / 1024" | bc)
+              FOLDER_ENCODED=$(echo "${FOLDER_NAME}" | sed 's/ /%20/g')
+              FILE_ENCODED=$(echo "${ARCHIVE_NAME}.zip" | sed 's/ /%20/g')
+              RAW_LINK="https://github.com/${REPO_OWNER}/${REPO_NAME}/raw/${BRANCH}/downloads/${FOLDER_ENCODED}/${FILE_ENCODED}"
+
+              {
+                echo "# ${ARCHIVE_NAME} Archive"
+                echo ""
+                echo "---"
+                echo ""
+                echo "## Download Information"
+                echo ""
+                echo "| Property | Value |"
+                echo "|----------|-------|"
+                echo "| **Archive Name** | \`${ARCHIVE_NAME}.zip\` |"
+                echo "| **Size** | ${ZIP_SIZE_MB} MB |"
+                echo "| **Status** | **Complete (100%)** |"
+                if [ -n "$ZIP_PASSWORD" ]; then
+                  echo "| **Password Protected** | **YES** |"
+                else
+                  echo "| **Password Protected** | **NO** |"
+                fi
+                echo ""
+                echo "---"
+                echo ""
+                echo "## Download Link"
+                echo ""
+                echo "| File | Link |"
+                echo "|------|------|"
+                echo "| \`${ARCHIVE_NAME}.zip\` | [Download](${RAW_LINK}) |"
+                echo ""
+                echo "---"
+                echo ""
+                echo "*This tool created by [avasam.ir](https://avasam.ir)*"
+              } > "downloads/$FOLDER_NAME/README.md"
             fi
             rm -rf tmp_downloads
           else
@@ -242,6 +297,8 @@ jobs:
               FOLDER_NAME=$(get_unique_folder "downloads" "$BASENAME_NO_EXT")
               mkdir -p "downloads/$FOLDER_NAME"
 
+              FOLDER_ENCODED=$(echo "${FOLDER_NAME}" | sed 's/ /%20/g')
+
               if [ "$SIZE" -gt "$SPLIT_THRESHOLD_BYTES" ]; then
                 echo "$BASENAME is $(( SIZE / 1024 / 1024 ))MB - splitting into ${SPLIT_THRESHOLD_MB}MB parts"
                 if [ -n "$ZIP_PASSWORD" ]; then
@@ -251,29 +308,62 @@ jobs:
                 fi
                 PARTS_COUNT=$(ls downloads/${FOLDER_NAME}/${BASENAME}.z* 2>/dev/null | wc -l)
                 echo "Parts created in folder downloads/$FOLDER_NAME: $PARTS_COUNT files"
+
+                # Build download links for all parts
+                DOWNLOAD_LINKS=""
+                for part_file in "downloads/${FOLDER_NAME}/${BASENAME}".z* "downloads/${FOLDER_NAME}/${BASENAME}.zip"; do
+                  if [ -f "$part_file" ]; then
+                    PART_BASENAME=$(basename "$part_file")
+                    PART_ENCODED=$(echo "${PART_BASENAME}" | sed 's/ /%20/g')
+                    RAW_LINK="https://github.com/${REPO_OWNER}/${REPO_NAME}/raw/${BRANCH}/downloads/${FOLDER_ENCODED}/${PART_ENCODED}"
+                    DOWNLOAD_LINKS="${DOWNLOAD_LINKS}| \`${PART_BASENAME}\` | [Download](${RAW_LINK}) |"$'\n'
+                  fi
+                done
+
                 {
-                  echo "========================================================"
-                  echo "  AVASAM Split Archive"
-                  echo "  https://avasam.ir"
-                  echo "========================================================"
+                  echo "# ${BASENAME} Archive"
                   echo ""
-                  echo "Original File: $BASENAME"
-                  echo "Original Size: $(( SIZE / 1024 / 1024 )) MB"
-                  echo "Parts: $PARTS_COUNT"
+                  echo "---"
+                  echo ""
+                  echo "## Download Information"
+                  echo ""
+                  echo "| Property | Value |"
+                  echo "|----------|-------|"
+                  echo "| **Original File** | \`${BASENAME}\` |"
+                  echo "| **Original Size** | $(( SIZE / 1024 / 1024 )) MB |"
+                  echo "| **Parts** | ${PARTS_COUNT} |"
+                  echo "| **Status** | **Complete (100%)** |"
                   if [ -n "$ZIP_PASSWORD" ]; then
-                    echo "Password Protected: YES"
+                    echo "| **Password Protected** | **YES** |"
+                  else
+                    echo "| **Password Protected** | **NO** |"
                   fi
                   echo ""
-                  echo "To extract, use one of these methods:"
+                  echo "---"
                   echo ""
-                  echo "Windows:"
-                  echo "  - Use 7-Zip or WinRAR to extract ${BASENAME}.zip"
+                  echo "## Download Links"
                   echo ""
-                  echo "Linux/Mac:"
-                  echo "  zip -F ${BASENAME}.zip --out combined.zip"
-                  echo "  unzip combined.zip"
-                  echo "========================================================"
-                } > "downloads/${FOLDER_NAME}/README.txt"
+                  echo "| File | Link |"
+                  echo "|------|------|"
+                  printf '%s' "${DOWNLOAD_LINKS}"
+                  echo ""
+                  echo "---"
+                  echo ""
+                  echo "## How to Extract"
+                  echo ""
+                  echo "**Windows:**"
+                  echo "- Use 7-Zip or WinRAR to extract \`${BASENAME}.zip\`"
+                  echo ""
+                  echo "**Linux/Mac:**"
+                  echo "\`\`\`bash"
+                  echo "zip -F ${BASENAME}.zip --out combined.zip"
+                  echo "unzip combined.zip"
+                  echo "\`\`\`"
+                  echo ""
+                  echo "---"
+                  echo ""
+                  echo "*This tool created by [avasam.ir](https://avasam.ir)*"
+                } > "downloads/${FOLDER_NAME}/README.md"
               else
                 echo "$BASENAME - creating zip in folder: downloads/$FOLDER_NAME"
                 if [ -n "$ZIP_PASSWORD" ]; then
@@ -281,19 +371,40 @@ jobs:
                 else
                   zip -j "downloads/${FOLDER_NAME}/${BASENAME}.zip" "$FILE"
                 fi
+
+                FILE_ENCODED=$(echo "${BASENAME}.zip" | sed 's/ /%20/g')
+                RAW_LINK="https://github.com/${REPO_OWNER}/${REPO_NAME}/raw/${BRANCH}/downloads/${FOLDER_ENCODED}/${FILE_ENCODED}"
+
                 {
-                  echo "========================================================"
-                  echo "  AVASAM Archive"
-                  echo "  https://avasam.ir"
-                  echo "========================================================"
+                  echo "# ${BASENAME} Archive"
                   echo ""
-                  echo "Original File: $BASENAME"
-                  echo "Original Size: $(( SIZE / 1024 / 1024 )) MB"
+                  echo "---"
+                  echo ""
+                  echo "## Download Information"
+                  echo ""
+                  echo "| Property | Value |"
+                  echo "|----------|-------|"
+                  echo "| **Original File** | \`${BASENAME}\` |"
+                  echo "| **Size** | $(( SIZE / 1024 / 1024 )) MB |"
+                  echo "| **Status** | **Complete (100%)** |"
                   if [ -n "$ZIP_PASSWORD" ]; then
-                    echo "Password Protected: YES"
+                    echo "| **Password Protected** | **YES** |"
+                  else
+                    echo "| **Password Protected** | **NO** |"
                   fi
-                  echo "========================================================"
-                } > "downloads/${FOLDER_NAME}/README.txt"
+                  echo ""
+                  echo "---"
+                  echo ""
+                  echo "## Download Link"
+                  echo ""
+                  echo "| File | Link |"
+                  echo "|------|------|"
+                  echo "| \`${BASENAME}.zip\` | [Download](${RAW_LINK}) |"
+                  echo ""
+                  echo "---"
+                  echo ""
+                  echo "*This tool created by [avasam.ir](https://avasam.ir)*"
+                } > "downloads/${FOLDER_NAME}/README.md"
               fi
             done
             rm -rf tmp_downloads
@@ -333,11 +444,11 @@ jobs:
             COUNTER=1
             echo "$FOLDERS" | while read -r FOLDER; do
               if [ -n "$FOLDER" ]; then
-                echo "$COUNTER - [$FOLDER]($REPO_URL/$FOLDER)"
+                echo "${COUNTER}. [$FOLDER]($REPO_URL/$FOLDER)"
+                echo ""
                 COUNTER=$((COUNTER + 1))
               fi
             done
-            echo ""
             echo "---"
           } >> README.md
 
