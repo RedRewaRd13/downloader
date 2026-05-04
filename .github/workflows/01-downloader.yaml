@@ -358,7 +358,10 @@ jobs:
           echo "Total files to push: $TOTAL"
 
           if [ "$TOTAL" -eq 0 ]; then
-            git diff --cached --quiet || git commit -m "[AVASAM] Update README.md [skip ci]" && git push origin HEAD:"$BRANCH"
+            if [ -n "$(git diff --cached --name-only)" ]; then
+              git commit -m "[AVASAM] Update README.md [skip ci]"
+              git push origin HEAD:"$BRANCH"
+            fi
             echo "Nothing else to commit"
             exit 0
           fi
@@ -376,12 +379,15 @@ jobs:
             if [ "$BATCH_NUM" -eq 1 ]; then
               git add README.md
             fi
-            git commit -m "[AVASAM] Add downloaded files - batch $BATCH_NUM [skip ci]"
 
-            git pull --rebase origin "$BRANCH"
-            git push origin HEAD:"$BRANCH"
-
-            echo "Batch $BATCH_NUM pushed"
+            if [ -n "$(git diff --cached --name-only)" ]; then
+              git commit -m "[AVASAM] Add downloaded files - batch $BATCH_NUM [skip ci]"
+              git pull --rebase origin "$BRANCH"
+              git push origin HEAD:"$BRANCH"
+              echo "Batch $BATCH_NUM pushed"
+            else
+              echo "Batch $BATCH_NUM skipped - no new changes"
+            fi
           done
 
           echo "All $TOTAL files pushed in $BATCH_NUM batch(es) - AVASAM (https://avasam.ir)"
