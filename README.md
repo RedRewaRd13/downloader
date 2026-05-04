@@ -77,8 +77,12 @@ a
 
 ---
 
+---
+
 ## فایل های دانلود شده در گیتهاب شما :
 
-1 - [ares-windows-x64](https://github.com/RedRewaRd13/downloader/tree/main/downloads/ares-windows-x64)
+1. [ares-windows-x64](https://github.com/RedRewaRd13/downloader/tree/main/downloads/ares-windows-x64)
+
+2. [batocera-x86_64-42-20251006.img](https://github.com/RedRewaRd13/downloader/tree/main/downloads/batocera-x86_64-42-20251006.img)
 
 ---
