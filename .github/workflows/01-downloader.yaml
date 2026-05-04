@@ -1,4 +1,4 @@
-name: ⬇️ 1-Download from url
+name: ⬇️  01- Download from url
 
 on:
   workflow_dispatch:
@@ -15,11 +15,11 @@ on:
         options:
           - normal
           - zip
-      split_threshold_mb:
-        description: 'Split files larger than this MB (0 = never split)'
+      password:
+        description: 'Password for zip files (optional)'
         required: false
-        default: 90
-        type: number
+        default: ''
+        type: string
 
 jobs:
   save-file:
@@ -35,7 +35,7 @@ jobs:
       - name: Install aria2 and zip
         run: |
           sudo apt-get update
-          sudo apt-get install -y aria2 zip
+          sudo apt-get install -y aria2 zip curl
 
       - name: AVASAM Downloader - https://avasam.ir
         run: |
@@ -47,51 +47,301 @@ jobs:
         run: |
           MODE="${{ github.event.inputs.mode }}"
           URLS="${{ github.event.inputs.urls }}"
-          SPLIT_THRESHOLD_MB="${{ github.event.inputs.split_threshold_mb }}"
+          ZIP_PASSWORD="${{ github.event.inputs.password }}"
+          SPLIT_THRESHOLD_MB=90
           SPLIT_THRESHOLD_BYTES=$(( SPLIT_THRESHOLD_MB * 1024 * 1024 ))
 
-          echo "🏷️  AVASAM (https://avasam.ir) - Downloading with mode: $MODE"
-          echo "Split threshold: $SPLIT_THRESHOLD_MB MB"
+          echo "AVASAM (https://avasam.ir) - Downloading with mode: $MODE"
+          echo "Split threshold: $SPLIT_THRESHOLD_MB MB (automatic)"
+          if [ -n "$ZIP_PASSWORD" ]; then
+            echo "Password protection: ENABLED"
+          else
+            echo "Password protection: DISABLED"
+          fi
 
           mkdir -p downloads tmp_downloads
 
-          # Download each URL
+          RANDOM_WORDS=("alpha" "beta" "gamma" "delta" "epsilon" "zeta" "theta" "kappa" "lambda" "sigma" "omega" "nova" "star" "moon" "sun" "sky" "cloud" "river" "ocean" "mountain")
+
+          get_random_word() {
+            echo "${RANDOM_WORDS[$RANDOM % ${#RANDOM_WORDS[@]}]}_$RANDOM"
+          }
+
+          get_unique_folder() {
+            local BASE_PATH="$1"
+            local NAME="$2"
+            if [ ! -d "$BASE_PATH/$NAME" ]; then
+              echo "$NAME"
+              return
+            fi
+            local RANDOM_SUFFIX=$(get_random_word)
+            while [ -d "$BASE_PATH/${NAME}_${RANDOM_SUFFIX}" ]; do
+              RANDOM_SUFFIX=$(get_random_word)
+            done
+            echo "${NAME}_${RANDOM_SUFFIX}"
+          }
+
+          get_unique_name() {
+            local BASE_PATH="$1"
+            local NAME="$2"
+            local IS_DIR="$3"
+            if [ "$IS_DIR" = "true" ]; then
+              if [ ! -d "$BASE_PATH/$NAME" ]; then
+                echo "$NAME"
+                return
+              fi
+              local COUNTER=1
+              while [ -d "$BASE_PATH/${NAME}_${COUNTER}" ]; do
+                COUNTER=$((COUNTER + 1))
+              done
+              echo "${NAME}_${COUNTER}"
+            else
+              if [ ! -f "$BASE_PATH/$NAME" ]; then
+                echo "$NAME"
+                return
+              fi
+              local FILENAME="${NAME%.*}"
+              local EXT="${NAME##*.}"
+              if [ "$FILENAME" = "$NAME" ]; then
+                EXT=""
+              fi
+              local COUNTER=1
+              if [ -n "$EXT" ] && [ "$FILENAME" != "$EXT" ]; then
+                while [ -f "$BASE_PATH/${FILENAME}_${COUNTER}.${EXT}" ]; do
+                  COUNTER=$((COUNTER + 1))
+                done
+                echo "${FILENAME}_${COUNTER}.${EXT}"
+              else
+                while [ -f "$BASE_PATH/${NAME}_${COUNTER}" ]; do
+                  COUNTER=$((COUNTER + 1))
+                done
+                echo "${NAME}_${COUNTER}"
+              fi
+            fi
+          }
+
+          create_error_file() {
+            local FILENAME="$1"
+            local ERROR_MSG="$2"
+            local URL="$3"
+            local BASENAME_NO_EXT="${FILENAME%.*}"
+            local FOLDER_NAME=$(get_unique_folder "downloads" "$BASENAME_NO_EXT")
+            mkdir -p "downloads/$FOLDER_NAME"
+            {
+              echo "========================================================"
+              echo "  AVASAM Download Error Report"
+              echo "  https://avasam.ir"
+              echo "========================================================"
+              echo ""
+              echo "File: $FILENAME"
+              echo "URL: $URL"
+              echo "Date: $(date '+%Y-%m-%d %H:%M:%S UTC')"
+              echo ""
+              echo "ERROR:"
+              echo "$ERROR_MSG"
+              echo ""
+              echo "========================================================"
+              echo "  Possible Solutions:"
+              echo "========================================================"
+              echo "- Check if the URL is correct and accessible"
+              echo "- The file may have been removed or moved"
+              echo "- The server may require authentication"
+              echo "- For SourceForge: Try using the direct download link"
+              echo "- Some servers block automated downloads (403 Forbidden)"
+              echo "- Try again later if it is a temporary server issue"
+              echo "========================================================"
+            } > "downloads/$FOLDER_NAME/ERROR.txt"
+            echo "Error file created: downloads/$FOLDER_NAME/ERROR.txt"
+          }
+
+          download_with_retry() {
+            local URL="$1"
+            local FILENAME="$2"
+            local MAX_RETRIES=3
+            local RETRY_DELAY=5
+            local SUCCESS=false
+            local ERROR_LOG=""
+
+            for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
+              echo "Attempt $attempt of $MAX_RETRIES for $FILENAME"
+
+              ERROR_LOG=$(aria2c \
+                --split=2 \
+                --max-connection-per-server=2 \
+                --min-split-size=20M \
+                --max-tries=3 \
+                --retry-wait=5 \
+                --timeout=60 \
+                --connect-timeout=30 \
+                --follow-torrent=false \
+                --check-certificate=false \
+                --allow-overwrite=true \
+                --auto-file-renaming=false \
+                --dir="tmp_downloads" \
+                --out="$FILENAME" \
+                "$URL" 2>&1) && SUCCESS=true && break
+
+              echo "aria2c failed, trying curl fallback..."
+
+              ERROR_LOG=$(curl -L -f -# \
+                --retry 3 \
+                --retry-delay 5 \
+                --connect-timeout 30 \
+                --max-time 3600 \
+                -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+                -o "tmp_downloads/$FILENAME" \
+                "$URL" 2>&1) && SUCCESS=true && break
+
+              echo "Waiting ${RETRY_DELAY}s before retry..."
+              sleep $RETRY_DELAY
+              RETRY_DELAY=$((RETRY_DELAY * 2))
+            done
+
+            if [ "$SUCCESS" = true ] && [ -f "tmp_downloads/$FILENAME" ]; then
+              if [ -s "tmp_downloads/$FILENAME" ]; then
+                echo "Successfully downloaded: $FILENAME"
+                return 0
+              else
+                rm -f "tmp_downloads/$FILENAME"
+                create_error_file "$FILENAME" "Downloaded file is empty (0 bytes). The server may have returned an error page instead of the actual file." "$URL"
+                return 1
+              fi
+            else
+              create_error_file "$FILENAME" "$ERROR_LOG" "$URL"
+              return 1
+            fi
+          }
+
           for URL in $URLS; do
-            FILENAME=$(basename "$URL")
-            echo "⬇️ Downloading $URL -> $FILENAME"
-            aria2c \
-              --split=2 \
-              --max-connection-per-server=2 \
-              --min-split-size=90M \
-              --dir="tmp_downloads" \
-              --out="$FILENAME" \
-              "$URL"
+            FILENAME=$(basename "$URL" | sed 's/%20/ /g' | sed 's/%2F/-/g' | sed 's/[?#].*//')
+            FILENAME=$(echo "$FILENAME" | sed 's/[<>:"|?*]/_/g')
+            echo "Downloading $URL -> $FILENAME"
+            download_with_retry "$URL" "$FILENAME" || echo "Failed to download: $FILENAME"
           done
 
-          # Zip all downloads if mode is 'zip'
           if [ "$MODE" = "zip" ]; then
-            ARCHIVE_NAME="downloads/archive_$(date +%Y%m%d_%H%M%S).zip"
-            echo "📦 Creating zip archive: $ARCHIVE_NAME"
-            zip -j "$ARCHIVE_NAME" tmp_downloads/*
+            if [ -n "$(ls -A tmp_downloads 2>/dev/null)" ]; then
+              ARCHIVE_NAME="archive_$(date +%Y%m%d_%H%M%S)"
+              FOLDER_NAME=$(get_unique_folder "downloads" "$ARCHIVE_NAME")
+              mkdir -p "downloads/$FOLDER_NAME"
+              echo "Creating zip archive in folder: downloads/$FOLDER_NAME"
+              if [ -n "$ZIP_PASSWORD" ]; then
+                zip -j -P "$ZIP_PASSWORD" "downloads/$FOLDER_NAME/${ARCHIVE_NAME}.zip" tmp_downloads/*
+              else
+                zip -j "downloads/$FOLDER_NAME/${ARCHIVE_NAME}.zip" tmp_downloads/*
+              fi
+            fi
             rm -rf tmp_downloads
           else
-            # Normal mode: handle splitting large files
             for FILE in tmp_downloads/*; do
               [ -f "$FILE" ] || continue
               SIZE=$(stat -c%s "$FILE")
               BASENAME=$(basename "$FILE")
+              BASENAME_NO_EXT="${BASENAME%.*}"
 
-              if [ "$SPLIT_THRESHOLD_BYTES" -gt 0 ] && [ "$SIZE" -gt "$SPLIT_THRESHOLD_BYTES" ]; then
-                echo "✂️ $BASENAME is $(( SIZE / 1024 / 1024 ))MB — splitting into ${SPLIT_THRESHOLD_MB}MB parts (zip-split)"
-                # Create a zip split into parts that can be reassembled with `zip -F`
-                zip -0 -s "${SPLIT_THRESHOLD_MB}m" "downloads/${BASENAME}.zip" -j "$FILE"
-                echo "✅ Parts: $(ls downloads/${BASENAME}.z* 2>/dev/null | wc -l)"
+              FOLDER_NAME=$(get_unique_folder "downloads" "$BASENAME_NO_EXT")
+              mkdir -p "downloads/$FOLDER_NAME"
+
+              if [ "$SIZE" -gt "$SPLIT_THRESHOLD_BYTES" ]; then
+                echo "$BASENAME is $(( SIZE / 1024 / 1024 ))MB - splitting into ${SPLIT_THRESHOLD_MB}MB parts"
+                if [ -n "$ZIP_PASSWORD" ]; then
+                  zip -0 -s "${SPLIT_THRESHOLD_MB}m" -P "$ZIP_PASSWORD" "downloads/${FOLDER_NAME}/${BASENAME}.zip" -j "$FILE"
+                else
+                  zip -0 -s "${SPLIT_THRESHOLD_MB}m" "downloads/${FOLDER_NAME}/${BASENAME}.zip" -j "$FILE"
+                fi
+                PARTS_COUNT=$(ls downloads/${FOLDER_NAME}/${BASENAME}.z* 2>/dev/null | wc -l)
+                echo "Parts created in folder downloads/$FOLDER_NAME: $PARTS_COUNT files"
+                {
+                  echo "========================================================"
+                  echo "  AVASAM Split Archive"
+                  echo "  https://avasam.ir"
+                  echo "========================================================"
+                  echo ""
+                  echo "Original File: $BASENAME"
+                  echo "Original Size: $(( SIZE / 1024 / 1024 )) MB"
+                  echo "Parts: $PARTS_COUNT"
+                  if [ -n "$ZIP_PASSWORD" ]; then
+                    echo "Password Protected: YES"
+                  fi
+                  echo ""
+                  echo "To extract, use one of these methods:"
+                  echo ""
+                  echo "Windows:"
+                  echo "  - Use 7-Zip or WinRAR to extract ${BASENAME}.zip"
+                  echo ""
+                  echo "Linux/Mac:"
+                  echo "  zip -F ${BASENAME}.zip --out combined.zip"
+                  echo "  unzip combined.zip"
+                  echo "========================================================"
+                } > "downloads/${FOLDER_NAME}/README.txt"
               else
-                cp "$FILE" "downloads/$BASENAME"
+                echo "$BASENAME - creating zip in folder: downloads/$FOLDER_NAME"
+                if [ -n "$ZIP_PASSWORD" ]; then
+                  zip -j -P "$ZIP_PASSWORD" "downloads/${FOLDER_NAME}/${BASENAME}.zip" "$FILE"
+                else
+                  zip -j "downloads/${FOLDER_NAME}/${BASENAME}.zip" "$FILE"
+                fi
+                {
+                  echo "========================================================"
+                  echo "  AVASAM Archive"
+                  echo "  https://avasam.ir"
+                  echo "========================================================"
+                  echo ""
+                  echo "Original File: $BASENAME"
+                  echo "Original Size: $(( SIZE / 1024 / 1024 )) MB"
+                  if [ -n "$ZIP_PASSWORD" ]; then
+                    echo "Password Protected: YES"
+                  fi
+                  echo "========================================================"
+                } > "downloads/${FOLDER_NAME}/README.txt"
               fi
             done
             rm -rf tmp_downloads
           fi
+
+      - name: Update README.md with download links
+        run: |
+          REPO_URL="${{ github.server_url }}/${{ github.repository }}/tree/${{ github.ref_name }}/downloads"
+
+          FOLDERS=$(find downloads -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort)
+
+          if [ -z "$FOLDERS" ]; then
+            echo "No folders found in downloads"
+            exit 0
+          fi
+
+          SECTION_TITLE="فایل های دانلود شده در گیتهاب شما :"
+
+          if [ ! -f "README.md" ]; then
+            echo "# AVASAM Downloader" > README.md
+            echo "" >> README.md
+            echo "https://avasam.ir" >> README.md
+            echo "" >> README.md
+          fi
+
+          if grep -q "$SECTION_TITLE" README.md; then
+            sed -i "/$SECTION_TITLE/,/^---$/d" README.md
+            sed -i '${/^$/d;}' README.md
+          fi
+
+          {
+            echo ""
+            echo "---"
+            echo ""
+            echo "## $SECTION_TITLE"
+            echo ""
+            COUNTER=1
+            echo "$FOLDERS" | while read -r FOLDER; do
+              if [ -n "$FOLDER" ]; then
+                echo "$COUNTER - [$FOLDER]($REPO_URL/$FOLDER)"
+                COUNTER=$((COUNTER + 1))
+              fi
+            done
+            echo ""
+            echo "---"
+          } >> README.md
+
+          echo "README.md updated with download links"
 
       - name: Commit & Push in batches of 5 files (AVASAM)
         run: |
@@ -99,16 +349,17 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          echo "🏷️  AVASAM (https://avasam.ir) - Preparing to commit files"
+          echo "AVASAM (https://avasam.ir) - Preparing to commit files"
 
-          # Collect all new/modified files under downloads/
+          git add README.md
           mapfile -t ALL_FILES < <(git ls-files --others --modified --exclude-standard downloads/)
 
           TOTAL=${#ALL_FILES[@]}
-          echo "📦 Total files to push: $TOTAL"
+          echo "Total files to push: $TOTAL"
 
           if [ "$TOTAL" -eq 0 ]; then
-            echo "Nothing to commit"
+            git diff --cached --quiet || git commit -m "[AVASAM] Update README.md [skip ci]" && git push origin HEAD:"$BRANCH"
+            echo "Nothing else to commit"
             exit 0
           fi
 
@@ -119,16 +370,18 @@ jobs:
             BATCH_NUM=$(( BATCH_NUM + 1 ))
             BATCH=("${ALL_FILES[@]:i:BATCH_SIZE}")
 
-            echo "🚀 Pushing batch $BATCH_NUM: files $((i+1))–$(( i + ${#BATCH[@]} )) of $TOTAL"
+            echo "Pushing batch $BATCH_NUM: files $((i+1)) to $(( i + ${#BATCH[@]} )) of $TOTAL"
 
             git add "${BATCH[@]}"
-            git commit -m "[AVASAM] Add downloaded files — batch $BATCH_NUM [skip ci]"
+            if [ "$BATCH_NUM" -eq 1 ]; then
+              git add README.md
+            fi
+            git commit -m "[AVASAM] Add downloaded files - batch $BATCH_NUM [skip ci]"
 
-            # Pull with rebase before each push to avoid conflicts
             git pull --rebase origin "$BRANCH"
             git push origin HEAD:"$BRANCH"
 
-            echo "✅ Batch $BATCH_NUM pushed"
+            echo "Batch $BATCH_NUM pushed"
           done
 
-          echo "🎉 All $TOTAL files pushed in $BATCH_NUM batch(es) — AVASAM (https://avasam.ir)"
+          echo "All $TOTAL files pushed in $BATCH_NUM batch(es) - AVASAM (https://avasam.ir)"
