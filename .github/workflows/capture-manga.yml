@@ -28,7 +28,6 @@ jobs:
           const puppeteer = require('puppeteer');
           const fs = require('fs');
 
-          // جایگزین waitForTimeout
           const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
           (async () => {
@@ -58,9 +57,19 @@ jobs:
 
             console.log('Navigating...');
             await page.goto(rawUrl, { waitUntil: 'networkidle2', timeout: 120000 });
-            await wait(3000);   // <-- اصلاح شد
 
-            // Smooth scroll
+            // ---------- مهم: صبر می‌کنیم تا اولین عکس مانگا ظاهر بشه ----------
+            try {
+              await page.waitForSelector('img[src*="uploads.mangadex.org"]', { timeout: 30000 });
+              console.log('Reader loaded, first image found.');
+            } catch (e) {
+              console.error('Reader did not load in time. Dumping HTML...');
+              const body = await page.evaluate(() => document.body.innerHTML.substring(0,1000));
+              console.error(body);
+              process.exit(1);
+            }
+
+            // حالا اسکرول می‌کنیم تا بقیه عکس‌ها هم لود بشن
             await page.evaluate(async () => {
               await new Promise(resolve => {
                 let total = 0;
@@ -75,35 +84,27 @@ jobs:
                 }, 400);
               });
             });
-            await wait(5000);   // <-- اصلاح شد
+            await wait(3000); // یه صبر اضافه
 
-            // Extract image URLs
+            // استخراج لینک‌ها
             let imgUrls = await page.evaluate(() => {
               const imgs = document.querySelectorAll('img[src*="uploads.mangadex.org"]');
               return Array.from(imgs).map(img => img.src);
             });
-            if (imgUrls.length === 0) {
-              // fallback: images with data-src
-              imgUrls = await page.evaluate(() => {
-                const imgs = document.querySelectorAll('img[data-src*="uploads.mangadex.org"]');
-                return Array.from(imgs).map(img => img.dataset.src);
-              });
-            }
-            if (imgUrls.length === 0) {
-              console.error('No images found. Page HTML snippet:');
-              const snippet = await page.evaluate(() => document.body.innerHTML.substring(0,500));
-              console.error(snippet);
-              process.exit(1);
-            }
             console.log('Found', imgUrls.length, 'images');
 
-            // Prepare output folder
+            if (imgUrls.length === 0) {
+              console.error('Still no images found after scroll.');
+              process.exit(1);
+            }
+
+            // پوشه خروجی
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0,19);
             const slug = rawUrl.replace(/[^a-zA-Z0-9]/g, '_').substring(0,60);
             const saveDir = 'manga_captures/' + slug + '_' + timestamp;
             fs.mkdirSync(saveDir, { recursive: true });
 
-            // Download each page
+            // دانلود هر عکس
             for (let i = 0; i < imgUrls.length; i++) {
               const imgPage = await browser.newPage();
               await imgPage.setUserAgent(
