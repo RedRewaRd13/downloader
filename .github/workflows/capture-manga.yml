@@ -9,61 +9,59 @@ on:
 jobs:
   capture:
     runs-on: ubuntu-latest
-    timeout-minutes: 60                      # حداکثر یک ساعت – ولی زودتر تموم می‌شه
+    timeout-minutes: 60
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
 
-      - name: نصب Puppeteer
+      - name: Setup Node & Puppeteer
         run: |
           npm init -y
           npm install puppeteer
 
-      - name: دریافت و ذخیره تک‌تک صفحه‌ها
+      - name: Run capture script
         env:
           INPUT_URL: ${{ github.event.inputs.chapter_url }}
         run: |
-          node -e "
+          cat > capture.js << 'EOF'
           const puppeteer = require('puppeteer');
           const fs = require('fs');
 
           (async () => {
-            // ---------- ۱. آماده‌سازی URL ----------
             let rawUrl = process.env.INPUT_URL.trim();
             if (!rawUrl.startsWith('http')) {
               rawUrl = 'https://' + rawUrl;
             }
-
-            // اگه کاربر long-strip رو فراموش کرده باشه، خودکار اضافه می‌کنیم
             if (!rawUrl.includes('style=long-strip')) {
               rawUrl += (rawUrl.includes('?') ? '&' : '?') + 'style=long-strip';
-              console.log('Auto-added long-strip parameter → ' + rawUrl);
             }
+            console.log('Final URL:', rawUrl);
 
-            // ---------- ۲. راه‌اندازی مرورگر ----------
             const browser = await puppeteer.launch({
               headless: 'new',
-              args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+              args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu'
+              ]
             });
             const page = await browser.newPage();
-
-            // User-Agent واقعی برای رد نشدن از MangaDex
             await page.setUserAgent(
               'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             );
             await page.setViewport({ width: 800, height: 1000 });
 
-            // ---------- ۳. بارگذاری صفحه (با صبر زیاد) ----------
-            console.log('Opening:', rawUrl);
-            await page.goto(rawUrl, { waitUntil: 'networkidle2', timeout: 120000 }); // ۲ دقیقه برای لود اولیه
+            console.log('Navigating...');
+            await page.goto(rawUrl, { waitUntil: 'networkidle2', timeout: 120000 });
             await page.waitForTimeout(3000);
 
-            // ---------- ۴. اسکرول آروم برای لود شدن همه برش‌ها ----------
+            // Smooth scroll
             await page.evaluate(async () => {
               await new Promise(resolve => {
                 let total = 0;
-                const dist = 200;
+                const dist = 300;
                 const timer = setInterval(() => {
                   window.scrollBy(0, dist);
                   total += dist;
@@ -71,59 +69,64 @@ jobs:
                     clearInterval(timer);
                     resolve();
                   }
-                }, 300);
+                }, 400);
               });
             });
-            // صبر اضافه برای اتمام بارگذاری عکس‌ها
             await page.waitForTimeout(5000);
 
-            // ---------- ۵. استخراج لینک عکس‌های خود MangaDex ----------
-            const imgUrls = await page.evaluate(() => {
-              return Array.from(
-                document.querySelectorAll('img[src*=\"uploads.mangadex.org\"]')
-              ).map(img => img.src);
+            // Extract image URLs (try multiple selectors)
+            let imgUrls = await page.evaluate(() => {
+              const imgs = document.querySelectorAll('img[src*="uploads.mangadex.org"]');
+              return Array.from(imgs).map(img => img.src);
             });
-
             if (imgUrls.length === 0) {
-              console.error('❌ هیچ عکسی پیدا نشد. شاید لینک اشتباه باشد یا سایت در دسترس نباشد.');
+              // fallback: images with data-src
+              imgUrls = await page.evaluate(() => {
+                const imgs = document.querySelectorAll('img[data-src*="uploads.mangadex.org"]');
+                return Array.from(imgs).map(img => img.dataset.src);
+              });
+            }
+            if (imgUrls.length === 0) {
+              console.error('No images found. Page HTML snippet:');
+              const snippet = await page.evaluate(() => document.body.innerHTML.substring(0,500));
+              console.error(snippet);
               process.exit(1);
             }
+            console.log('Found', imgUrls.length, 'images');
 
-            console.log('✅ تعداد صفحات پیدا شده:', imgUrls.length);
-
-            // ---------- ۶. ایجاد پوشه خروجی با تاریخ و اسم کوتاه ----------
-            const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
-            const slug = rawUrl.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 60);
+            // Prepare output folder
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0,19);
+            const slug = rawUrl.replace(/[^a-zA-Z0-9]/g, '_').substring(0,60);
             const saveDir = 'manga_captures/' + slug + '_' + timestamp;
             fs.mkdirSync(saveDir, { recursive: true });
 
-            // ---------- ۷. دانلود تک‌تک صفحه‌ها (بدون محدودیت زمان کلی) ----------
+            // Download each page
             for (let i = 0; i < imgUrls.length; i++) {
-              console.log('Downloading page', (i + 1), '/', imgUrls.length);
-
               const imgPage = await browser.newPage();
               await imgPage.setUserAgent(
                 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
               );
+              await imgPage.setExtraHTTPHeaders({ Referer: 'https://mangadex.org/' });
+              console.log(`Downloading ${i+1}/${imgUrls.length}`);
               try {
-                const response = await imgPage.goto(imgUrls[i], { timeout: 30000 });
+                const response = await imgPage.goto(imgUrls[i], { timeout: 60000 });
                 const buffer = await response.buffer();
-                const filename = 'page_' + String(i + 1).padStart(3, '0') + '.jpg';
+                const filename = 'page_' + String(i+1).padStart(3,'0') + '.jpg';
                 fs.writeFileSync(saveDir + '/' + filename, buffer);
-                console.log('  ✔ ' + filename);
+                console.log('  OK:', filename);
               } catch (err) {
-                console.error('  ✖ خطا در دانلود صفحه ' + (i + 1) + ':', err.message);
+                console.error('  FAILED:', err.message);
               } finally {
                 await imgPage.close();
               }
             }
-
             await browser.close();
-            console.log('🎉 تمام شد. عکس‌ها در ' + saveDir);
+            console.log('Done. Files in', saveDir);
           })();
-          "
+          EOF
+          node capture.js
 
-      - name: ذخیره در مخزن
+      - name: Commit results
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
