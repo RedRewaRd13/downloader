@@ -1,4 +1,4 @@
-name: 📖 MangaDex Chapter Download (API)
+name: 📖 MangaDex Chapter Download (API + ZIP)
 on:
   workflow_dispatch:
     inputs:
@@ -9,7 +9,7 @@ on:
 jobs:
   download:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: write
     steps:
@@ -19,55 +19,44 @@ jobs:
         env:
           CHAPTER_URL: ${{ github.event.inputs.chapter_url }}
         run: |
-          # 1. UUID از لینک
           CHAPTER_ID=$(echo "$CHAPTER_URL" | awk -F/ '{print $NF}')
           echo "Chapter ID: $CHAPTER_ID"
 
           ATHOME_URL="https://api.mangadex.org/at-home/server/$CHAPTER_ID"
           echo "Fetching: $ATHOME_URL"
 
-          # 2. گرفتن پاسخ API (فقط کد HTTP برای بررسی اولیه)
           HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$ATHOME_URL")
           echo "HTTP Status: $HTTP_CODE"
 
           if [ "$HTTP_CODE" != "200" ]; then
-            echo "❌ API returned status $HTTP_CODE. Check the chapter ID or try again later."
+            echo "❌ API returned status $HTTP_CODE."
             exit 1
           fi
 
-          # 3. استخراج اطلاعات با یک درخواست مستقیم curl -> jq
-          #    بدون ذخیره در متغیرهای حجیم
-          echo "Extracting image list..."
-
-          # 4. گرفتن baseUrl و hash
           BASE_URL=$(curl -s "$ATHOME_URL" | jq -r '.baseUrl')
           CHAPTER_HASH=$(curl -s "$ATHOME_URL" | jq -r '.chapter.hash')
 
           if [ -z "$BASE_URL" ] || [ "$BASE_URL" = "null" ] || [ -z "$CHAPTER_HASH" ] || [ "$CHAPTER_HASH" = "null" ]; then
-            echo "❌ Failed to parse baseUrl or hash from API response:"
-            curl -s "$ATHOME_URL" | head -c 300
+            echo "❌ Failed to parse metadata."
+            exit 1
+          fi
+
+          curl -s "$ATHOME_URL" | jq -r '.chapter.data[]' > pages.txt
+          TOTAL=$(wc -l < pages.txt)
+
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "❌ No pages found."
             exit 1
           fi
 
           echo "Base URL: $BASE_URL"
           echo "Hash: $CHAPTER_HASH"
+          echo "Total pages: $TOTAL"
 
-          # 5. ذخیره لیست فایل‌ها در یک فایل موقت (لازم برای حلقه while)
-          curl -s "$ATHOME_URL" | jq -r '.chapter.data[]' > pages.txt
-          TOTAL=$(wc -l < pages.txt)
-
-          if [ "$TOTAL" -eq 0 ]; then
-            echo "❌ No pages found in API response."
-            exit 1
-          fi
-
-          echo "Number of pages: $TOTAL"
-
-          # 6. پوشه خروجی
-          FOLDER="manga_captures/$(echo "$CHAPTER_ID" | cut -c1-8)_$(date +%Y%m%d_%H%M%S)"
+          FOLDER_NAME="$(echo "$CHAPTER_ID" | cut -c1-8)_$(date +%Y%m%d_%H%M%S)"
+          FOLDER="manga_captures/$FOLDER_NAME"
           mkdir -p "$FOLDER"
 
-          # 7. دانلود هر صفحه
           PAGE_NUM=0
           while IFS= read -r FILENAME; do
             PAGE_NUM=$((PAGE_NUM + 1))
@@ -79,8 +68,17 @@ jobs:
             }
           done < pages.txt
 
-          echo "🎉 Done. Files in $FOLDER"
+          echo "🎉 Pages saved to: $FOLDER"
+          # ذخیره متغیرها برای مراحل بعد
           echo "FOLDER=$FOLDER" >> $GITHUB_ENV
+          echo "FOLDER_NAME=$FOLDER_NAME" >> $GITHUB_ENV
+
+      - name: ساخت فایل ZIP
+        run: |
+          cd manga_captures
+          zip -r "${FOLDER_NAME}.zip" "$FOLDER_NAME"
+          echo "✅ ZIP created: manga_captures/${FOLDER_NAME}.zip"
+          cd ..
 
       - name: Commit and push
         run: |
@@ -91,6 +89,6 @@ jobs:
             echo "No changes"
             exit 0
           fi
-          git commit -m "Download chapter via API [skip ci]"
+          git commit -m "Download chapter + ZIP [skip ci]"
           git pull --rebase
           git push
