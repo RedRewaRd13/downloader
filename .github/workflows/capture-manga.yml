@@ -54,7 +54,7 @@ jobs:
 
             await page.goto(rawUrl, { waitUntil: 'networkidle2', timeout: 120000 });
 
-            // صبر کن تا اولین عکس مانگا بیاد
+            // صبر کن تا حداقل یک عکس ظاهر بشه
             try {
               await page.waitForSelector('img[src*="uploads.mangadex.org"]', { timeout: 30000 });
               console.log('Reader loaded.');
@@ -68,72 +68,77 @@ jobs:
             const saveDir = 'manga_captures/' + slug + '_' + timestamp;
             fs.mkdirSync(saveDir, { recursive: true });
 
-            let pageNum = 0;
-            let lastImageUrl = '';
+            const downloaded = new Set(); // ذخیره عکس‌هایی که قبلاً دانلود کردیم
+            let previousCount = 0;
 
-            // تابع برای گرفتن عکس فعلی
-            const getCurrentImgUrl = async () => {
+            // تابع کمکی: گرفتن آرایه تمام URLهای عکس‌های موجود
+            const getAllImageUrls = async () => {
               return await page.evaluate(() => {
-                const img = document.querySelector('img[src*="uploads.mangadex.org"]');
-                return img ? img.src : null;
+                const imgs = document.querySelectorAll('img[src*="uploads.mangadex.org"]');
+                return Array.from(imgs).map(img => img.src);
               });
             };
 
             while (true) {
-              const currentImgUrl = await getCurrentImgUrl();
-
-              if (!currentImgUrl) {
-                console.log('No image found. End of chapter.');
+              // صبر کن تا تعداد عکس‌ها بیشتر از دفعه قبل بشه (یعنی عکس جدید اضافه شده)
+              try {
+                await page.waitForFunction(
+                  (prevCount) => {
+                    return document.querySelectorAll('img[src*="uploads.mangadex.org"]').length > prevCount;
+                  },
+                  { timeout: 15000 },
+                  previousCount
+                );
+              } catch (e) {
+                // اگر تعداد عوض نشد، چپتر تموم شده
+                console.log('No new images added. End of chapter.');
                 break;
               }
 
-              // اگر عکس تغییر نکرده بود، احتمالاً ته چپتره
-              if (currentImgUrl === lastImageUrl) {
-                console.log('No new image after page turn. Chapter likely finished.');
+              // همه عکس‌ها رو بگیر
+              const allUrls = await getAllImageUrls();
+              console.log(`Total images in DOM: ${allUrls.length}`);
+
+              // اونایی که جدید هستن و دانلود نکردیم رو پیدا کن
+              const newUrls = allUrls.filter(url => !downloaded.has(url));
+              if (newUrls.length === 0) {
+                console.log('All images already downloaded. Finished.');
                 break;
               }
 
-              // ذخیره‌ی عکس جدید
-              lastImageUrl = currentImgUrl;
-              pageNum++;
-              console.log(`Page ${pageNum}: ${currentImgUrl}`);
+              // فقط **آخرین** عکس جدید رو دانلود کن (صفحه فعلی)
+              // (اگر چندتا جدید اضافه شدن، آخرینشون صفحه مورد نظره)
+              const currentUrl = newUrls[newUrls.length - 1];
+              console.log('New page image:', currentUrl);
 
-              // دانلود عکس
+              // علامت‌گذاری که دانلود شده
+              downloaded.add(currentUrl);
+
+              // دانلود
               const imgPage = await browser.newPage();
               await imgPage.setUserAgent(page.browser().userAgent());
               await imgPage.setExtraHTTPHeaders({ Referer: 'https://mangadex.org/' });
               try {
-                const response = await imgPage.goto(currentImgUrl, { timeout: 60000 });
+                const response = await imgPage.goto(currentUrl, { timeout: 60000 });
                 const buffer = await response.buffer();
-                const filename = 'page_' + String(pageNum).padStart(3, '0') + '.jpg';
+                const filename = 'page_' + String(downloaded.size).padStart(3, '0') + '.jpg';
                 fs.writeFileSync(saveDir + '/' + filename, buffer);
                 console.log('  ✔ ' + filename);
               } catch (err) {
                 console.error('  ✖ Download failed:', err.message);
+                // حذف از Set تا در دور بعد دوباره تلاش کنه (احتیاطی)
+                downloaded.delete(currentUrl);
               } finally {
                 await imgPage.close();
               }
 
-              // رفتن به صفحه بعد
-              await page.keyboard.press('ArrowRight');
+              // به روزرسانی شمارنده
+              previousCount = allUrls.length;
 
-              // منتظر تغییر عکس می‌شیم (حداکثر ۱۵ ثانیه)
-              try {
-                await page.waitForFunction(
-                  (oldUrl) => {
-                    const img = document.querySelector('img[src*="uploads.mangadex.org"]');
-                    return img && img.src !== oldUrl;
-                  },
-                  { timeout: 15000 },
-                  lastImageUrl
-                );
-                console.log('New image detected.');
-                // یه مکث کوتاه برای ثبات
-                await wait(500);
-              } catch (e) {
-                console.log('No new image appeared within timeout. Ending capture.');
-                break;
-              }
+              // برو صفحه بعد
+              await page.keyboard.press('ArrowRight');
+              // یه مکث کوچولو که reader واکنش نشون بده
+              await wait(500);
             }
 
             await browser.close();
