@@ -28,6 +28,9 @@ jobs:
           const puppeteer = require('puppeteer');
           const fs = require('fs');
 
+          // جایگزین waitForTimeout
+          const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
           (async () => {
             let rawUrl = process.env.INPUT_URL.trim();
             if (!rawUrl.startsWith('http')) {
@@ -55,7 +58,7 @@ jobs:
 
             console.log('Navigating...');
             await page.goto(rawUrl, { waitUntil: 'networkidle2', timeout: 120000 });
-            await page.waitForTimeout(3000);
+            await wait(3000);   // <-- اصلاح شد
 
             // Smooth scroll
             await page.evaluate(async () => {
@@ -72,9 +75,9 @@ jobs:
                 }, 400);
               });
             });
-            await page.waitForTimeout(5000);
+            await wait(5000);   // <-- اصلاح شد
 
-            // Extract image URLs (try multiple selectors)
+            // Extract image URLs
             let imgUrls = await page.evaluate(() => {
               const imgs = document.querySelectorAll('img[src*="uploads.mangadex.org"]');
               return Array.from(imgs).map(img => img.src);
