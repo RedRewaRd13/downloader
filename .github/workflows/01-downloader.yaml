@@ -68,7 +68,7 @@ jobs:
           RANDOM_WORDS=("alpha" "beta" "gamma" "delta" "epsilon" "zeta" "theta" "kappa" "lambda" "sigma" "omega" "nova" "star" "moon" "sun" "sky" "cloud" "river" "ocean" "mountain")
 
           get_random_word() {
-            echo "${RANDOM_WORDS[$RANDOM % ${#RANDOM_WORDS[@]}]}_$RANDOM"
+            echo "${RANDOM_WORDS[$RANDOM % ${#RANDOM_WORDS[@]}]}"
           }
 
           get_unique_folder() {
@@ -421,6 +421,25 @@ jobs:
             exit 0
           fi
 
+          # Create README.md inside downloads folder with list of downloaded files
+          {
+            echo "# Downloaded list :"
+            echo ""
+            echo "$FOLDERS" | while read -r FOLDER; do
+              if [ -n "$FOLDER" ]; then
+                FOLDER_ENCODED=$(echo "${FOLDER}" | sed 's/ /%20/g')
+                echo "- [${FOLDER}](./${FOLDER_ENCODED})"
+              fi
+            done
+            echo ""
+            echo "---"
+            echo ""
+            echo "*This tool created by [avasam.ir](https://avasam.ir)*"
+          } > "downloads/README.md"
+
+          echo "downloads/README.md created with list of downloaded files"
+
+          # Update root README.md
           SECTION_TITLE="فایل های دانلود شده در گیتهاب شما :"
 
           if [ ! -f "README.md" ]; then
@@ -463,6 +482,7 @@ jobs:
           echo "AVASAM (https://avasam.ir) - Preparing to commit files"
 
           git add README.md
+          git add downloads/README.md
           mapfile -t ALL_FILES < <(git ls-files --others --modified --exclude-standard downloads/)
 
           TOTAL=${#ALL_FILES[@]}
@@ -489,6 +509,7 @@ jobs:
             git add "${BATCH[@]}"
             if [ "$BATCH_NUM" -eq 1 ]; then
               git add README.md
+              git add downloads/README.md
             fi
 
             if [ -n "$(git diff --cached --name-only)" ]; then
