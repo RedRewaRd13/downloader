@@ -5,6 +5,10 @@ on:
       chapter_url:
         description: 'لینک چپتر (مثلاً https://mangadex.org/chapter/...)'
         required: true
+      zip_password:
+        description: 'رمز دلخواه برای فایل فشرده (اختیاری)'
+        required: false
+        default: ''
 
 jobs:
   download:
@@ -14,6 +18,11 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+
+      - name: نصب ابزارهای فشرده‌سازی
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full zip
 
       - name: دریافت اطلاعات و دانلود
         env:
@@ -69,15 +78,23 @@ jobs:
           done < pages.txt
 
           echo "🎉 Pages saved to: $FOLDER"
-          # ذخیره متغیرها برای مراحل بعد
           echo "FOLDER=$FOLDER" >> $GITHUB_ENV
           echo "FOLDER_NAME=$FOLDER_NAME" >> $GITHUB_ENV
 
-      - name: ساخت فایل ZIP
+      - name: ساخت فایل فشرده (ZIP یا 7Z رمزدار)
+        env:
+          ZIPPASS: ${{ github.event.inputs.zip_password }}
         run: |
           cd manga_captures
-          zip -r "${FOLDER_NAME}.zip" "$FOLDER_NAME"
-          echo "✅ ZIP created: manga_captures/${FOLDER_NAME}.zip"
+          if [ -n "$ZIPPASS" ]; then
+            echo "🔐 ایجاد فایل 7z با رمز..."
+            7z a -p"${ZIPPASS}" -mhe=on "${FOLDER_NAME}.7z" "$FOLDER_NAME" > /dev/null
+            echo "✅ فایل 7z رمزدار ساخته شد: manga_captures/${FOLDER_NAME}.7z"
+          else
+            echo "📦 ایجاد فایل ZIP بدون رمز..."
+            zip -r "${FOLDER_NAME}.zip" "$FOLDER_NAME"
+            echo "✅ فایل ZIP ساخته شد: manga_captures/${FOLDER_NAME}.zip"
+          fi
           cd ..
 
       - name: Commit and push
@@ -89,6 +106,6 @@ jobs:
             echo "No changes"
             exit 0
           fi
-          git commit -m "Download chapter + ZIP [skip ci]"
+          git commit -m "Download chapter + archive [skip ci]"
           git pull --rebase
           git push
