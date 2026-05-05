@@ -1,0 +1,111 @@
+name: MangaDex Chapter Capture
+on:
+  workflow_dispatch:
+    inputs:
+      chapter_url:
+        description: 'آدرس فصل با حالت Long Strip (مثال: https://mangadex.org/chapter/.../1?style=long-strip)'
+        required: true
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: دریافت کد مخزن
+        uses: actions/checkout@v4
+
+      - name: نصب Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: نصب Puppeteer
+        run: npm install puppeteer
+
+      - name: دریافت و ذخیره تمام صفحه‌های فصل
+        uses: actions/github-script@v7
+        env:
+          CHAPTER_URL: ${{ github.event.inputs.chapter_url }}
+        script: |
+          const script = `
+            const puppeteer = require("puppeteer");
+            const fs = require("fs");
+
+            (async () => {
+              const browser = await puppeteer.launch({ headless: "new" });
+              const page = await browser.newPage();
+
+              // تنظیمات اولیه مرورگر
+              await page.setViewport({ width: 800, height: 1000 });
+              await page.setUserAgent(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+              );
+
+              const chapterUrl = process.env.CHAPTER_URL;
+              console.log("باز کردن:", chapterUrl);
+              await page.goto(chapterUrl, { waitUntil: "networkidle2", timeout: 60000 });
+
+              // صبر برای لود اولیه
+              await page.waitForTimeout(3000);
+
+              // اسکرول آروم تا انتهای صفحه برای بارگذاری همه تصاویر (Long Strip)
+              await page.evaluate(async () => {
+                await new Promise((resolve) => {
+                  let totalHeight = 0;
+                  const distance = 200;
+                  const timer = setInterval(() => {
+                    window.scrollBy(0, distance);
+                    totalHeight += distance;
+                    if (totalHeight >= document.body.scrollHeight) {
+                      clearInterval(timer);
+                      resolve();
+                    }
+                  }, 300);
+                });
+              });
+
+              // صبر نهایی برای لود کامل عکس‌ها
+              await page.waitForTimeout(4000);
+
+              // استخراج لینک عکس‌ها (فقط عکس‌های خود سایت)
+              const imgUrls = await page.evaluate(() => {
+                const imgs = document.querySelectorAll('img[src*="uploads.mangadex.org"]');
+                return Array.from(imgs).map(img => img.src);
+              });
+
+              console.log("تعداد عکس‌های پیدا شده:", imgUrls.length);
+
+              if (imgUrls.length === 0) {
+                console.log("هیچ عکسی پیدا نشد! لینک را چک کن یا شاید حالت Long Strip فعال نباشد.");
+                await page.screenshot({ path: "pages/mangadex/error.png", fullPage: true });
+              } else {
+                // ذخیره‌سازی عکس‌ها به ترتیب
+                const saveDir = "pages/mangadex/chapter";
+                fs.mkdirSync(saveDir, { recursive: true });
+
+                for (let i = 0; i < imgUrls.length; i++) {
+                  console.log("دریافت عکس", i + 1, "از", imgUrls.length);
+                  const imgPage = await browser.newPage();
+                  await imgPage.setUserAgent(page.browser().userAgent());
+                  const response = await imgPage.goto(imgUrls[i]);
+                  const buffer = await response.buffer();
+                  const filename = "page_" + String(i + 1).padStart(3, "0") + ".jpg";
+                  fs.writeFileSync(saveDir + "/" + filename, buffer);
+                  await imgPage.close();
+                }
+              }
+
+              await browser.close();
+              console.log("تمام شد.");
+            })();
+          `;
+          const { execSync } = require("child_process");
+          execSync(`node -e '${script.replace(/'/g, "'\\''")}'`, { stdio: "inherit" });
+
+      - name: ذخیره تغییرات در مخزن
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add pages/
+          git commit -m "MangaDex chapter captured" || echo "No changes"
+          git push
