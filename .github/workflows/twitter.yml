@@ -1,4 +1,4 @@
-name: Twitter Downloader
+name: "🐦 Twitter Downloader"
 
 on:
   workflow_dispatch:
