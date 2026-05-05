@@ -1,9 +1,9 @@
-name: 📖 Capture Manga Chapter (MangaDex)
+name: 📖 Capture Manga Chapter (Paged Mode)
 on:
   workflow_dispatch:
     inputs:
       chapter_url:
-        description: 'آدرس فصل (با Long Strip هم فرقی نمی‌کنه، خودکار درست می‌شه)'
+        description: 'آدرس فصل (نیازی به long-strip نیست)'
         required: true
 
 jobs:
@@ -20,7 +20,7 @@ jobs:
           npm init -y
           npm install puppeteer
 
-      - name: Run capture script
+      - name: Run paged capture script
         env:
           INPUT_URL: ${{ github.event.inputs.chapter_url }}
         run: |
@@ -34,9 +34,6 @@ jobs:
             let rawUrl = process.env.INPUT_URL.trim();
             if (!rawUrl.startsWith('http')) {
               rawUrl = 'https://' + rawUrl;
-            }
-            if (!rawUrl.includes('style=long-strip')) {
-              rawUrl += (rawUrl.includes('?') ? '&' : '?') + 'style=long-strip';
             }
             console.log('Final URL:', rawUrl);
 
@@ -55,75 +52,71 @@ jobs:
             );
             await page.setViewport({ width: 800, height: 1000 });
 
-            console.log('Navigating...');
+            // برو به صفحه چپتر
             await page.goto(rawUrl, { waitUntil: 'networkidle2', timeout: 120000 });
 
-            // ---------- مهم: صبر می‌کنیم تا اولین عکس مانگا ظاهر بشه ----------
+            // صبر کن تا اولین عکس مانگا بیاد
             try {
               await page.waitForSelector('img[src*="uploads.mangadex.org"]', { timeout: 30000 });
-              console.log('Reader loaded, first image found.');
+              console.log('Reader loaded.');
             } catch (e) {
-              console.error('Reader did not load in time. Dumping HTML...');
-              const body = await page.evaluate(() => document.body.innerHTML.substring(0,1000));
-              console.error(body);
+              console.error('Reader did not load. Exiting.');
               process.exit(1);
             }
 
-            // حالا اسکرول می‌کنیم تا بقیه عکس‌ها هم لود بشن
-            await page.evaluate(async () => {
-              await new Promise(resolve => {
-                let total = 0;
-                const dist = 300;
-                const timer = setInterval(() => {
-                  window.scrollBy(0, dist);
-                  total += dist;
-                  if (total >= document.body.scrollHeight) {
-                    clearInterval(timer);
-                    resolve();
-                  }
-                }, 400);
-              });
-            });
-            await wait(3000); // یه صبر اضافه
-
-            // استخراج لینک‌ها
-            let imgUrls = await page.evaluate(() => {
-              const imgs = document.querySelectorAll('img[src*="uploads.mangadex.org"]');
-              return Array.from(imgs).map(img => img.src);
-            });
-            console.log('Found', imgUrls.length, 'images');
-
-            if (imgUrls.length === 0) {
-              console.error('Still no images found after scroll.');
-              process.exit(1);
-            }
-
-            // پوشه خروجی
+            // آماده‌سازی پوشه
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0,19);
             const slug = rawUrl.replace(/[^a-zA-Z0-9]/g, '_').substring(0,60);
             const saveDir = 'manga_captures/' + slug + '_' + timestamp;
             fs.mkdirSync(saveDir, { recursive: true });
 
-            // دانلود هر عکس
-            for (let i = 0; i < imgUrls.length; i++) {
+            let pageNum = 0;
+            let lastImageUrl = '';
+
+            while (true) {
+              // عکس فعلی رو پیدا کن
+              const currentImgUrl = await page.evaluate(() => {
+                const img = document.querySelector('img[src*="uploads.mangadex.org"]');
+                return img ? img.src : null;
+              });
+
+              if (!currentImgUrl) {
+                console.log('No more images found. End of chapter.');
+                break;
+              }
+
+              // اگر همون عکس قبلی بود، یعنی تغییر نکرده → احتمالاً به آخر رسیدیم
+              if (currentImgUrl === lastImageUrl) {
+                console.log('Image did not change after page turn. Stopping.');
+                break;
+              }
+
+              lastImageUrl = currentImgUrl;
+              pageNum++;
+              console.log(`Page ${pageNum}: ${currentImgUrl}`);
+
+              // دانلود عکس فعلی
               const imgPage = await browser.newPage();
-              await imgPage.setUserAgent(
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-              );
+              await imgPage.setUserAgent(page.browser().userAgent());
               await imgPage.setExtraHTTPHeaders({ Referer: 'https://mangadex.org/' });
-              console.log(`Downloading ${i+1}/${imgUrls.length}`);
               try {
-                const response = await imgPage.goto(imgUrls[i], { timeout: 60000 });
+                const response = await imgPage.goto(currentImgUrl, { timeout: 60000 });
                 const buffer = await response.buffer();
-                const filename = 'page_' + String(i+1).padStart(3,'0') + '.jpg';
+                const filename = 'page_' + String(pageNum).padStart(3, '0') + '.jpg';
                 fs.writeFileSync(saveDir + '/' + filename, buffer);
-                console.log('  OK:', filename);
+                console.log('  ✔ ' + filename);
               } catch (err) {
-                console.error('  FAILED:', err.message);
+                console.error('  ✖ Download failed:', err.message);
               } finally {
                 await imgPage.close();
               }
+
+              // برو به صفحه بعد: کلید Arrow Right
+              await page.keyboard.press('ArrowRight');
+              // صبر کن تا عکس بعدی لود بشه
+              await wait(2000);   // 2 ثانیه صبر، می‌تونی بیشتر کنی
             }
+
             await browser.close();
             console.log('Done. Files in', saveDir);
           })();
@@ -139,6 +132,6 @@ jobs:
             echo "No changes"
             exit 0
           fi
-          git commit -m "Capture manga chapter [skip ci]"
+          git commit -m "Capture manga chapter (paged) [skip ci]"
           git pull --rebase
           git push
