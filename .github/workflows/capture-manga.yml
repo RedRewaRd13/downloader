@@ -15,46 +15,60 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: دریافت اطلاعات چپتر از API و دانلود
+      - name: دریافت لیست تصاویر و دانلود
         env:
           CHAPTER_URL: ${{ github.event.inputs.chapter_url }}
         run: |
-          # استخراج UUID از لینک (همون رشته آخر)
+          # 1. استخراج UUID چپتر
           CHAPTER_ID=$(echo "$CHAPTER_URL" | awk -F/ '{print $NF}')
           echo "Chapter ID: $CHAPTER_ID"
 
-          # گرفت اطلاعات از API
-          API_URL="https://api.mangadex.org/chapter/$CHAPTER_ID"
-          echo "Fetching: $API_URL"
-          RESPONSE=$(curl -s "$API_URL")
-          HASH=$(echo "$RESPONSE" | jq -r '.data.attributes.hash')
-          PAGES=$(echo "$RESPONSE" | jq -r '.data.attributes.data[]')
-          CHAPTER_TITLE=$(echo "$RESPONSE" | jq -r '.data.attributes.title // "untitled"')
+          # 2. گرفتن metadata از at-home server (baseUrl + hash + لیست فایل‌ها)
+          ATHOME_URL="https://api.mangadex.org/at-home/server/$CHAPTER_ID"
+          echo "Fetching image metadata from: $ATHOME_URL"
+          METADATA=$(curl -s "$ATHOME_URL")
 
-          if [ -z "$HASH" ] || [ "$HASH" = "null" ]; then
-            echo "❌ Could not fetch chapter info. Check URL or API access."
+          # خطا اگر metadata خالی بود
+          if [ -z "$METADATA" ]; then
+            echo "❌ Failed to fetch image metadata"
             exit 1
           fi
 
-          echo "Chapter title: $CHAPTER_TITLE"
-          echo "Number of pages: $(echo "$PAGES" | wc -l)"
+          # استخراج baseUrl و hash و آرایه data (کیفیت اصلی)
+          BASE_URL=$(echo "$METADATA" | jq -r '.baseUrl')
+          CHAPTER_HASH=$(echo "$METADATA" | jq -r '.chapter.hash')
 
-          # ساخت پوشه خروجی
+          # آرایه data رو به صورت خط‌به‌خط ذخیره می‌کنیم (روش امن برای jq 1.6)
+          echo "$METADATA" | jq -r '.chapter.data[]' > pages.txt
+          TOTAL=$(wc -l < pages.txt)
+
+          if [ -z "$BASE_URL" ] || [ "$BASE_URL" = "null" ] || [ -z "$CHAPTER_HASH" ]; then
+            echo "❌ Metadata incomplete. Response was:"
+            echo "$METADATA" | head -c 500
+            exit 1
+          fi
+
+          echo "Base URL: $BASE_URL"
+          echo "Chapter hash: $CHAPTER_HASH"
+          echo "Total pages: $TOTAL"
+
+          # 3. ساخت پوشه خروجی
           FOLDER="manga_captures/$(echo "$CHAPTER_ID" | cut -c1-8)_$(date +%Y%m%d_%H%M%S)"
           mkdir -p "$FOLDER"
 
+          # 4. دانلود صفحه‌ها یکی‌یکی
           PAGE_NUM=0
-          echo "$PAGES" | while read -r PAGE; do
+          while IFS= read -r FILENAME; do
             PAGE_NUM=$((PAGE_NUM + 1))
             PAD_NUM=$(printf "%03d" $PAGE_NUM)
-            IMAGE_URL="https://uploads.mangadex.org/data/$HASH/$PAGE"
-            echo "Downloading page $PAGE_NUM: $IMAGE_URL"
-            curl -L --retry 2 --max-time 30 -o "$FOLDER/page_$PAD_NUM.jpg" "$IMAGE_URL"
-          done
+            IMAGE_URL="${BASE_URL}/data/${CHAPTER_HASH}/${FILENAME}"
+            echo "[$PAGE_NUM/$TOTAL] Downloading: $IMAGE_URL"
+            curl -L --retry 3 --max-time 60 -o "$FOLDER/page_$PAD_NUM.jpg" "$IMAGE_URL" || {
+              echo "⚠️  Failed to download page $PAGE_NUM, continuing..."
+            }
+          done < pages.txt
 
           echo "🎉 Done. Files saved in $FOLDER"
-
-          # ذخیره مسیر پوشه برای کامیت
           echo "FOLDER=$FOLDER" >> $GITHUB_ENV
 
       - name: Commit and push
