@@ -9,66 +9,77 @@ on:
 jobs:
   download:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
 
-      - name: دریافت لیست تصاویر و دانلود
+      - name: دریافت اطلاعات و دانلود
         env:
           CHAPTER_URL: ${{ github.event.inputs.chapter_url }}
         run: |
-          # 1. استخراج UUID چپتر
+          # 1. UUID از لینک
           CHAPTER_ID=$(echo "$CHAPTER_URL" | awk -F/ '{print $NF}')
           echo "Chapter ID: $CHAPTER_ID"
 
-          # 2. گرفتن metadata از at-home server (baseUrl + hash + لیست فایل‌ها)
           ATHOME_URL="https://api.mangadex.org/at-home/server/$CHAPTER_ID"
-          echo "Fetching image metadata from: $ATHOME_URL"
-          METADATA=$(curl -s "$ATHOME_URL")
+          echo "Fetching: $ATHOME_URL"
 
-          # خطا اگر metadata خالی بود
-          if [ -z "$METADATA" ]; then
-            echo "❌ Failed to fetch image metadata"
+          # 2. گرفتن پاسخ API (فقط کد HTTP برای بررسی اولیه)
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$ATHOME_URL")
+          echo "HTTP Status: $HTTP_CODE"
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "❌ API returned status $HTTP_CODE. Check the chapter ID or try again later."
             exit 1
           fi
 
-          # استخراج baseUrl و hash و آرایه data (کیفیت اصلی)
-          BASE_URL=$(echo "$METADATA" | jq -r '.baseUrl')
-          CHAPTER_HASH=$(echo "$METADATA" | jq -r '.chapter.hash')
+          # 3. استخراج اطلاعات با یک درخواست مستقیم curl -> jq
+          #    بدون ذخیره در متغیرهای حجیم
+          echo "Extracting image list..."
 
-          # آرایه data رو به صورت خط‌به‌خط ذخیره می‌کنیم (روش امن برای jq 1.6)
-          echo "$METADATA" | jq -r '.chapter.data[]' > pages.txt
-          TOTAL=$(wc -l < pages.txt)
+          # 4. گرفتن baseUrl و hash
+          BASE_URL=$(curl -s "$ATHOME_URL" | jq -r '.baseUrl')
+          CHAPTER_HASH=$(curl -s "$ATHOME_URL" | jq -r '.chapter.hash')
 
-          if [ -z "$BASE_URL" ] || [ "$BASE_URL" = "null" ] || [ -z "$CHAPTER_HASH" ]; then
-            echo "❌ Metadata incomplete. Response was:"
-            echo "$METADATA" | head -c 500
+          if [ -z "$BASE_URL" ] || [ "$BASE_URL" = "null" ] || [ -z "$CHAPTER_HASH" ] || [ "$CHAPTER_HASH" = "null" ]; then
+            echo "❌ Failed to parse baseUrl or hash from API response:"
+            curl -s "$ATHOME_URL" | head -c 300
             exit 1
           fi
 
           echo "Base URL: $BASE_URL"
-          echo "Chapter hash: $CHAPTER_HASH"
-          echo "Total pages: $TOTAL"
+          echo "Hash: $CHAPTER_HASH"
 
-          # 3. ساخت پوشه خروجی
+          # 5. ذخیره لیست فایل‌ها در یک فایل موقت (لازم برای حلقه while)
+          curl -s "$ATHOME_URL" | jq -r '.chapter.data[]' > pages.txt
+          TOTAL=$(wc -l < pages.txt)
+
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "❌ No pages found in API response."
+            exit 1
+          fi
+
+          echo "Number of pages: $TOTAL"
+
+          # 6. پوشه خروجی
           FOLDER="manga_captures/$(echo "$CHAPTER_ID" | cut -c1-8)_$(date +%Y%m%d_%H%M%S)"
           mkdir -p "$FOLDER"
 
-          # 4. دانلود صفحه‌ها یکی‌یکی
+          # 7. دانلود هر صفحه
           PAGE_NUM=0
           while IFS= read -r FILENAME; do
             PAGE_NUM=$((PAGE_NUM + 1))
             PAD_NUM=$(printf "%03d" $PAGE_NUM)
             IMAGE_URL="${BASE_URL}/data/${CHAPTER_HASH}/${FILENAME}"
             echo "[$PAGE_NUM/$TOTAL] Downloading: $IMAGE_URL"
-            curl -L --retry 3 --max-time 60 -o "$FOLDER/page_$PAD_NUM.jpg" "$IMAGE_URL" || {
-              echo "⚠️  Failed to download page $PAGE_NUM, continuing..."
+            curl -s -L --retry 2 --max-time 60 -o "$FOLDER/page_$PAD_NUM.jpg" "$IMAGE_URL" || {
+              echo "⚠️  Failed to download page $PAGE_NUM"
             }
           done < pages.txt
 
-          echo "🎉 Done. Files saved in $FOLDER"
+          echo "🎉 Done. Files in $FOLDER"
           echo "FOLDER=$FOLDER" >> $GITHUB_ENV
 
       - name: Commit and push
