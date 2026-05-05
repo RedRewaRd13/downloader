@@ -1,44 +1,65 @@
-name: 📖 Capture Manga Chapter
+name: 📖 Capture Manga Chapter (MangaDex)
 on:
   workflow_dispatch:
     inputs:
       chapter_url:
-        description: 'MangaDex chapter URL (با ?style=long-strip)'
+        description: 'آدرس فصل (با Long Strip هم فرقی نمی‌کنه، خودکار درست می‌شه)'
         required: true
 
 jobs:
   capture:
     runs-on: ubuntu-latest
+    timeout-minutes: 60                      # حداکثر یک ساعت – ولی زودتر تموم می‌شه
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node and Puppeteer
+      - name: نصب Puppeteer
         run: |
           npm init -y
           npm install puppeteer
 
-      - name: Capture full-page screenshot
+      - name: دریافت و ذخیره تک‌تک صفحه‌ها
+        env:
+          INPUT_URL: ${{ github.event.inputs.chapter_url }}
         run: |
           node -e "
           const puppeteer = require('puppeteer');
           const fs = require('fs');
+
           (async () => {
+            // ---------- ۱. آماده‌سازی URL ----------
+            let rawUrl = process.env.INPUT_URL.trim();
+            if (!rawUrl.startsWith('http')) {
+              rawUrl = 'https://' + rawUrl;
+            }
+
+            // اگه کاربر long-strip رو فراموش کرده باشه، خودکار اضافه می‌کنیم
+            if (!rawUrl.includes('style=long-strip')) {
+              rawUrl += (rawUrl.includes('?') ? '&' : '?') + 'style=long-strip';
+              console.log('Auto-added long-strip parameter → ' + rawUrl);
+            }
+
+            // ---------- ۲. راه‌اندازی مرورگر ----------
             const browser = await puppeteer.launch({
               headless: 'new',
-              args: ['--no-sandbox', '--disable-setuid-sandbox']
+              args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
             });
             const page = await browser.newPage();
-            await page.setViewport({ width: 800, height: 1000 });
-            await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-            const url = process.env.CHAPTER_URL;
-            console.log('Opening:', url);
-            await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+            // User-Agent واقعی برای رد نشدن از MangaDex
+            await page.setUserAgent(
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            );
+            await page.setViewport({ width: 800, height: 1000 });
+
+            // ---------- ۳. بارگذاری صفحه (با صبر زیاد) ----------
+            console.log('Opening:', rawUrl);
+            await page.goto(rawUrl, { waitUntil: 'networkidle2', timeout: 120000 }); // ۲ دقیقه برای لود اولیه
             await page.waitForTimeout(3000);
 
-            // Scroll slow to trigger lazy loading
+            // ---------- ۴. اسکرول آروم برای لود شدن همه برش‌ها ----------
             await page.evaluate(async () => {
               await new Promise(resolve => {
                 let total = 0;
@@ -53,37 +74,62 @@ jobs:
                 }, 300);
               });
             });
-            await page.waitForTimeout(4000);
+            // صبر اضافه برای اتمام بارگذاری عکس‌ها
+            await page.waitForTimeout(5000);
 
-            // Create folder
-            const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0,19);
-            const chapterSlug = process.env.CHAPTER_URL.replace(/[^a-zA-Z0-9]/g, '_').substring(0,50);
-            const saveDir = 'manga_captures/' + chapterSlug + '_' + timestamp;
+            // ---------- ۵. استخراج لینک عکس‌های خود MangaDex ----------
+            const imgUrls = await page.evaluate(() => {
+              return Array.from(
+                document.querySelectorAll('img[src*=\"uploads.mangadex.org\"]')
+              ).map(img => img.src);
+            });
+
+            if (imgUrls.length === 0) {
+              console.error('❌ هیچ عکسی پیدا نشد. شاید لینک اشتباه باشد یا سایت در دسترس نباشد.');
+              process.exit(1);
+            }
+
+            console.log('✅ تعداد صفحات پیدا شده:', imgUrls.length);
+
+            // ---------- ۶. ایجاد پوشه خروجی با تاریخ و اسم کوتاه ----------
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
+            const slug = rawUrl.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 60);
+            const saveDir = 'manga_captures/' + slug + '_' + timestamp;
             fs.mkdirSync(saveDir, { recursive: true });
 
-            // Take full-page screenshot (all pages as one tall image)
-            await page.screenshot({ path: saveDir + '/full_chapter.png', fullPage: true });
-            console.log('Screenshot saved to:', saveDir + '/full_chapter.png');
+            // ---------- ۷. دانلود تک‌تک صفحه‌ها (بدون محدودیت زمان کلی) ----------
+            for (let i = 0; i < imgUrls.length; i++) {
+              console.log('Downloading page', (i + 1), '/', imgUrls.length);
 
-            // Also capture each individual page as separate screenshots (optional)
-            const pageCount = await page.evaluate(() => {
-              return document.querySelectorAll('img[src*=\"uploads.mangadex.org\"]').length;
-            });
-            console.log('Number of image elements:', pageCount);
+              const imgPage = await browser.newPage();
+              await imgPage.setUserAgent(
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+              );
+              try {
+                const response = await imgPage.goto(imgUrls[i], { timeout: 30000 });
+                const buffer = await response.buffer();
+                const filename = 'page_' + String(i + 1).padStart(3, '0') + '.jpg';
+                fs.writeFileSync(saveDir + '/' + filename, buffer);
+                console.log('  ✔ ' + filename);
+              } catch (err) {
+                console.error('  ✖ خطا در دانلود صفحه ' + (i + 1) + ':', err.message);
+              } finally {
+                await imgPage.close();
+              }
+            }
 
             await browser.close();
+            console.log('🎉 تمام شد. عکس‌ها در ' + saveDir);
           })();
           "
-        env:
-          CHAPTER_URL: ${{ github.event.inputs.chapter_url }}
 
-      - name: Commit and push
+      - name: ذخیره در مخزن
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git add manga_captures/
           if git diff --staged --quiet; then
-            echo "Nothing to commit"
+            echo "No changes"
             exit 0
           fi
           git commit -m "Capture manga chapter [skip ci]"
