@@ -1,95 +1,112 @@
-import snscrape.modules.twitter as sntwitter
-import json, os, requests, sys
+import requests
+import json
+import sys
+import os
+import re
+from urllib.parse import urlparse, parse_qs
 
-def download_media(url, folder):
+def download_file(url, folder):
+    """دانلود فایل از یک URL"""
     os.makedirs(folder, exist_ok=True)
-    fname = url.split("/")[-1].split("?")[0]
-    if not fname:
-        fname = "media"
-    path = os.path.join(folder, fname)
-    if not os.path.exists(path):
-        r = requests.get(url, stream=True)
-        if r.status_code == 200:
-            with open(path, 'wb') as f:
-                for chunk in r.iter_content(1024):
+    local_filename = url.split('/')[-1].split('?')[0]
+    file_path = os.path.join(folder, local_filename)
+    
+    if not os.path.exists(file_path):
+        with requests.get(url, stream=True) as r:
+            r.raise_for_status()
+            with open(file_path, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
                     f.write(chunk)
-    return path
+    return file_path
 
-def main(username):
-    # ۱. آخرین توییت کاربر را پیدا کن
-    query = f"from:{username}"
-    tweets = list(sntwitter.TwitterSearchScraper(query).get_items())
-    if not tweets:
-        print("هیچ توییتی پیدا نشد.")
-        return
-    latest = tweets[0]
-    tweet_id = latest.id
-    conv_id = latest.conversationId
+def get_tweet_details(tweet_url):
+    """دریافت اطلاعات توییت و عکس/فیلم‌ها با استفاده از FxTwitter (بدون نیاز به API)"""
+    tweet_id = tweet_url.strip().split('/')[-1]
+    api_url = f"https://api.fxtwitter.com/status/{tweet_id}"
+    
+    # FxTwitter API بدون هیچ احراز هویتی پاسخ می‌دهد
+    response = requests.get(api_url)
+    if response.status_code != 200:
+        raise Exception(f"خطا در اتصال به FxTwitter: {response.status_code}")
+    
+    data = response.json()
+    tweet_data = data.get('tweet', {})
+    
+    return tweet_data
 
-    # ۲. دریافت کامنت‌های همان توییت (حداکثر ۱۰۰ تا)
-    replies_query = f"conversation_id:{conv_id}"
-    replies = list(sntwitter.TwitterSearchScraper(replies_query).get_items())
+def get_replies(tweet_url):
+    """دریافت ریپلای‌های یک توییت با استفاده از Nitter (بدون نیاز به API)"""
+    # استخراج username و tweet_id از URL توییتر
+    parts = tweet_url.strip().split('/')
+    username = parts[3]
+    tweet_id = parts[5]
+    
+    # لیستی از چند نمونه عمومی Nitter
+    nitter_instances = [
+        "https://nitter.net",
+        "https://nitter.1d4.us",
+        "https://nitter.kavin.rocks"
+    ]
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
+    
+    for instance in nitter_instances:
+        try:
+            nitter_url = f"{instance}/{username}/status/{tweet_id}"
+            response = requests.get(nitter_url, headers=headers, timeout=15)
+            
+            if response.status_code == 200:
+                # استخراج کامنت‌ها با استفاده از regex
+                pattern = r'<div class="tweet-content media-body">(.*?)</div>\s*<div class="tweet-footer">'
+                comments = re.findall(pattern, response.text, re.DOTALL)
+                
+                cleaned_comments = [re.sub(r'<[^>]+>', '', c).strip() for c in comments]
+                return cleaned_comments
+        except:
+            continue
+    
+    return [] # اگر هیچ نمونه‌ای در دسترس نبود، لیست خالی برمی‌گرداند
 
-    comments = []
-    for r in replies:
-        if r.id != tweet_id:
-            comments.append(r)
-            if len(comments) >= 100:
-                break
-
-    # ۳. ساخت پوشه برای ذخیره‌سازی
-    base = f"downloads/twitter_{username}"
-    media_dir = os.path.join(base, "media")
-    os.makedirs(media_dir, exist_ok=True)
-
-    # ۴. نوشتن فایل متنی
-    lines = []
-    lines.append(f"کاربر: @{username}")
-    lines.append(f"شناسه توییت: {tweet_id}")
-    lines.append(f"تاریخ: {latest.date}")
-    lines.append(f"متن: {latest.rawContent}")
-    lines.append("-" * 50)
-
-    # ۵. دانلود عکس‌ها و ویدیوهای توییت اصلی
-    if latest.media:
-        for i, m in enumerate(latest.media):
-            # سعی می‌کنیم بهترین کیفیت رو بگیریم
-            if isinstance(m, sntwitter.Photo):
-                url = m.fullUrl + "?format=jpg&name=orig"
-            elif hasattr(m, 'variants'):
-                best = max([v for v in m.variants if hasattr(v, 'bitrate')], key=lambda v: v.bitrate)
-                url = best.url
-            else:
-                continue
-            path = download_media(url, media_dir)
-            lines.append(f"مدیا {i+1}: {os.path.basename(path)}")
-
-    lines.append("")
-    lines.append("کامنت‌ها:")
-    lines.append("=" * 40)
-
-    # ۶. پردازش کامنت‌ها و مدیای آنها
-    for idx, c in enumerate(comments, 1):
-        lines.append(f"\n{idx}. @{c.user.username} ({c.date}):")
-        lines.append(c.rawContent)
-        if c.media:
-            for j, m in enumerate(c.media):
-                if isinstance(m, sntwitter.Photo):
-                    url = m.fullUrl + "?format=jpg&name=orig"
-                elif hasattr(m, 'variants'):
-                    best = max([v for v in m.variants if hasattr(v, 'bitrate')], key=lambda v: v.bitrate)
-                    url = best.url
-                else:
-                    continue
-                path = download_media(url, media_dir)
-                lines.append(f"  -> مدیا: {os.path.basename(path)}")
-
-    # ۷. ذخیره فایل summary.txt
-    with open(os.path.join(base, "summary.txt"), "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
-
+# ورودی: URL توییت را از آرگومان می‌گیریم
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("روش استفاده: python twitter_scraper.py username")
-        sys.exit(1)
-    main(sys.argv[1])
+    tweet_url = sys.argv[1]
+    username = tweet_url.strip().split('/')[3]
+    
+    # 1. دریافت اطلاعات توییت اصلی
+    tweet = get_tweet_details(tweet_url)
+    text = tweet.get('text', '')
+    author = tweet.get('author', {}).get('screen_name', '')
+    
+    # 2. ساخت پوشه‌ها
+    base_folder = f"downloads/twitter_{author}"
+    media_folder = os.path.join(base_folder, "media")
+    os.makedirs(media_folder, exist_ok=True)
+
+    # 3. نوشتن فایل متنی
+    summary = []
+    summary.append(f"تاریخ: {tweet.get('created_at', '')}")
+    summary.append(f"نویسنده: @{author}")
+    summary.append(f"متن توییت:\n{text}")
+    summary.append("-" * 50)
+    
+    # 4. دانلود عکس‌ها و ویدیوها
+    for media in tweet.get('media', {}).get('all', []):
+        media_url = media.get('url')
+        if media_url:
+            path = download_file(media_url, media_folder)
+            summary.append(f"مدیا: {os.path.basename(path)}")
+    
+    # 5. دریافت و اضافه کردن کامنت‌ها
+    replies = get_replies(tweet_url)
+    if replies:
+        summary.append("\nکامنت‌ها (تا ۱۰۰ مورد):\n" + "=" * 40)
+        for i, reply_text in enumerate(replies, 1):
+            summary.append(f"\n{i}. {reply_text}")
+            if i >= 100:
+                break
+    
+    # 6. ذخیره‌سازی نهایی
+    with open(os.path.join(base_folder, "summary.txt"), "w", encoding="utf-8") as f:
+        f.write("\n".join(summary))
