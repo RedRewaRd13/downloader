@@ -29,5 +29,5 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add downloads/
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Add twitter data for ${{ github.event.inputs.tweet_url }}" && git push)
+          git add twitter/
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Add tweet ${{ github.event.inputs.tweet_url }}" && git push)
