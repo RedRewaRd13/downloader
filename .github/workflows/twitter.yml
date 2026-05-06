@@ -6,6 +6,10 @@ on:
       tweet_url:
         description: 'لینک کامل توییت (https://x.com/username/status/...)'
         required: true
+      password:
+        description: 'پسورد برای فایل ZIP (اختیاری)'
+        required: false
+        default: ''
 
 jobs:
   download:
@@ -23,7 +27,7 @@ jobs:
         run: pip install requests
 
       - name: اجرای اسکریپت
-        run: python twitter_scraper.py "${{ github.event.inputs.tweet_url }}"
+        run: python twitter_scraper.py "${{ github.event.inputs.tweet_url }}" "${{ github.event.inputs.password }}"
 
       - name: ذخیره‌سازی تغییرات در ریپو
         run: |
