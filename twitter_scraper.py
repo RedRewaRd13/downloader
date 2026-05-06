@@ -1,4 +1,8 @@
-import requests, json, sys, os, re, xml.etree.ElementTree as ET
+import requests, json, sys, os, re
+from urllib.parse import quote
+
+# پروکسی رایگان که تحریم IP های گیتهاب را دور می‌زند
+PROXY = "https://corsproxy.io/?"
 
 def download_file(url, folder):
     os.makedirs(folder, exist_ok=True)
@@ -12,102 +16,49 @@ def download_file(url, folder):
                     f.write(chunk)
     return path
 
-def get_latest_tweet_url_fxtwitter(username):
-    """تلاش با چند نقطه‌ی پایانی مختلف FxTwitter"""
-    endpoints = [
-        f"https://api.fxtwitter.com/tweets/{username}?count=1",
-        f"https://api.fxtwitter.com/user/{username}/tweets?count=1",
-        f"https://api.fxtwitter.com/profile/{username}/tweets?count=1",
-    ]
-    for url in endpoints:
-        try:
-            resp = requests.get(url, timeout=10)
-            if resp.status_code == 200:
-                data = resp.json()
-                tweets = data.get('tweets') or data.get('data')
-                if tweets and len(tweets) > 0:
-                    tweet = tweets[0]
-                    tid = tweet.get('id')
-                    author = tweet.get('author', {}).get('screen_name', username)
-                    if tid:
-                        return f"https://x.com/{author}/status/{tid}"
-        except Exception:
-            continue
-    return None
-
-def get_latest_tweet_url_rss(username):
-    """تلاش با RSS رسمی توییتر و شبیه‌سازی کامل مرورگر"""
-    rss_url = f"https://syndication.twitter.com/srv/timeline-profile/screen-name/{username}"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-        'Accept': 'application/xml, text/xml, */*',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Referer': 'https://twitter.com/',
-    }
-    try:
-        resp = requests.get(rss_url, headers=headers, timeout=10)
-        if resp.status_code == 200 and resp.text.strip().startswith('<?xml'):
-            root = ET.fromstring(resp.content)
-            for item in root.iter('item'):
-                link = item.find('link')
-                if link is not None and link.text:
-                    return link.text.strip()
-    except Exception:
-        pass
-    return None
-
-def get_latest_tweet_url_from_profile(username):
-    """آخرین شانس: استخراج شناسه از صفحه‌ی پروفایل به عنوان Googlebot"""
-    profile_url = f"https://twitter.com/{username}"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)'
-    }
-    try:
-        resp = requests.get(profile_url, headers=headers, timeout=15)
-        if resp.status_code == 200:
-            # Twitter in its static version embeds the latest tweet ID in a script tag
-            match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', resp.text, re.DOTALL)
-            if match:
-                data = json.loads(match.group(1))
-                # --- navigating the JSON structure ---
-                # This is brittle but commonly points to the first tweet in the timeline
-                try:
-                    timeline = data['props']['pageProps']['timelineResponse']['timeline']['instructions']
-                    for instruction in timeline:
-                        if 'addEntries' in instruction:
-                            entries = instruction['addEntries']['entries']
-                            for entry in entries:
-                                if entry['entryId'].startswith('tweet-'):
-                                    tid = entry['entryId'].split('-')[1]
-                                    return f"https://x.com/{username}/status/{tid}"
-                except (KeyError, IndexError):
-                    pass
-    except Exception:
-        pass
-    return None
-
 def get_latest_tweet_url(username):
-    """تلاش ترکیبی برای یافتن لینک آخرین توییت"""
-    url = get_latest_tweet_url_fxtwitter(username)
-    if url:
-        print("✅ یافت شد با FxTwitter")
-        return url
-    url = get_latest_tweet_url_rss(username)
-    if url:
-        print("✅ یافت شد با RSS")
-        return url
-    url = get_latest_tweet_url_from_profile(username)
-    if url:
-        print("✅ یافت شد با استخراج از صفحه پروفایل")
-        return url
+    """
+    ابتدا صفحه پروفایل توییتر را از طریق پروکسی باز می‌کنیم
+    و شناسه اولین توییت را از کد JSON-ld استخراج می‌کنیم.
+    """
+    profile_url = f"https://twitter.com/{username}"
+    proxied = PROXY + quote(profile_url, safe='')
+    headers = {'User-Agent': 'Mozilla/5.0'}
+
+    try:
+        resp = requests.get(proxied, headers=headers, timeout=20)
+        if resp.status_code == 200:
+            # توییتر شناسه‌ها را در جاهایی مثل "identifier":"123456" ذخیره می‌کند
+            matches = re.findall(r'"identifier":"(\d+)"', resp.text)
+            if matches:
+                tweet_id = matches[0]
+                return f"https://x.com/{username}/status/{tweet_id}"
+    except Exception as e:
+        print(f"⚠️ روش پروکسی/پروفایل خطا داد: {e}")
+
+    # روش دوم: FxTwitter از طریق پروکسی
+    try:
+        fx_url = f"https://api.fxtwitter.com/profile/{username}/tweets?count=1"
+        proxied_fx = PROXY + quote(fx_url, safe='')
+        resp = requests.get(proxied_fx, headers=headers, timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            tweets = data.get('tweets', [])
+            if tweets:
+                tid = tweets[0].get('id')
+                author = tweets[0].get('author', {}).get('screen_name', username)
+                return f"https://x.com/{author}/status/{tid}"
+    except:
+        pass
     return None
 
 def get_tweet_details(tweet_url):
     tweet_id = tweet_url.strip().split('/')[-1]
-    api_url = f"https://api.fxtwitter.com/status/{tweet_id}"
-    resp = requests.get(api_url)
+    fx_url = f"https://api.fxtwitter.com/status/{tweet_id}"
+    proxied = PROXY + quote(fx_url, safe='')
+    resp = requests.get(proxied)
     if resp.status_code != 200:
-        raise Exception(f"خطا در FxTwitter: {resp.status_code}")
+        raise Exception(f"خطا در دریافت اطلاعات توییت: {resp.status_code}")
     return resp.json().get('tweet', {})
 
 def get_replies(username, tweet_id):
@@ -121,7 +72,7 @@ def get_replies(username, tweet_id):
     for instance in nitter_instances:
         try:
             nitter_url = f"{instance}/{username}/status/{tweet_id}"
-            resp = requests.get(nitter_url, headers=headers, timeout=15)
+            resp = requests.get(nitter_url, headers=headers, timeout=10)
             if resp.status_code == 200:
                 pattern = r'<div class="tweet-content media-body">(.*?)</div>'
                 comments = re.findall(pattern, resp.text, re.DOTALL)
@@ -140,10 +91,10 @@ def main():
         username = user_input
         tweet_url = get_latest_tweet_url(username)
         if not tweet_url:
-            print("❌ بعد از چند تلاش نتوانستم آخرین توییت را پیدا کنم.")
-            print("💡 می‌توانید لینک مستقیم توییت را به عنوان ورودی بدهید.")
+            print("❌ با وجود پروکسی هم نتوانستم آخرین توییت را پیدا کنم.")
+            print("💡 لطفاً لینک مستقیم توییت را وارد کنید.")
             sys.exit(1)
-        print(f"🔗 آخرین توییت: {tweet_url}")
+        print(f"✅ آخرین توییت: {tweet_url}")
 
     tweet = get_tweet_details(tweet_url)
     text = tweet.get('text', '')
@@ -173,7 +124,7 @@ def main():
         for i, r in enumerate(replies, 1):
             summary.append(f"\n{i}. {r}")
     else:
-        summary.append("\nکامنتی پیدا نشد (نمونه‌های Nitter ممکن است در دسترس نباشند).")
+        summary.append("\nکامنتی پیدا نشد (Nitter در دسترس نبود).")
 
     with open(os.path.join(base_folder, "summary.txt"), "w", encoding="utf-8") as f:
         f.write("\n".join(summary))
