@@ -3,8 +3,8 @@ name: "🐦 دانلود از توییتر"
 on:
   workflow_dispatch:
     inputs:
-      username_or_url:
-        description: 'نام کاربری (بدون @) یا لینک کامل توییت'
+      tweet_url:
+        description: 'لینک کامل توییت (https://x.com/username/status/...)'
         required: true
 
 jobs:
@@ -23,11 +23,11 @@ jobs:
         run: pip install requests
 
       - name: اجرای اسکریپت
-        run: python twitter_scraper.py "${{ github.event.inputs.username_or_url }}"
+        run: python twitter_scraper.py "${{ github.event.inputs.tweet_url }}"
 
       - name: ذخیره‌سازی تغییرات در ریپو
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add downloads/
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Add twitter data for ${{ github.event.inputs.username_or_url }}" && git push)
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Add twitter data for ${{ github.event.inputs.tweet_url }}" && git push)
