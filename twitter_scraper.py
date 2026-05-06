@@ -13,7 +13,6 @@ def download_file(url, folder):
     return path
 
 def get_tweet_with_thread(tweet_url):
-    """دریافت اطلاعات توییت + رشته مکالمه (Thread) از FxTwitter"""
     tweet_id = tweet_url.strip().split('/')[-1]
     fx_url = f"https://api.fxtwitter.com/status/{tweet_id}"
     resp = requests.get(fx_url)
@@ -23,7 +22,6 @@ def get_tweet_with_thread(tweet_url):
     return data.get('tweet', {}), data.get('thread', [])
 
 def get_replies_from_nitter(username, tweet_id):
-    """پشتیبان: دریافت کامنت‌ها از Nitter (در صورت در دسترس بودن)"""
     nitter_instances = [
         "https://nitter.net",
         "https://nitter.1d4.us",
@@ -55,7 +53,8 @@ def main():
     text = tweet.get('text', '')
     tweet_id = tweet.get('id', '')
 
-    base_folder = f"downloads/twitter_{username}"
+    # پوشه جدید: twitter/<شناسه توییت>/
+    base_folder = os.path.join("twitter", tweet_id)
     media_folder = os.path.join(base_folder, "media")
     os.makedirs(media_folder, exist_ok=True)
 
@@ -66,17 +65,14 @@ def main():
     summary.append(f"متن:\n{text}")
     summary.append("-" * 50)
 
-    # دانلود عکس‌ها و ویدیوهای توییت اصلی
     for media in tweet.get('media', {}).get('all', []):
         url = media.get('url')
         if url:
             path = download_file(url, media_folder)
             summary.append(f"مدیا: {os.path.basename(path)}")
 
-    # کامنت‌ها: اول از Thread خود FxTwitter
     comments = []
     if thread:
-        # thread شامل توییت اصلی هم هست، فیلترش می‌کنیم
         for t in thread:
             tid = t.get('id')
             if tid and tid != tweet_id:
@@ -91,7 +87,6 @@ def main():
         for i, c in enumerate(comments, 1):
             summary.append(f"{i}. {c}")
     else:
-        # اگر Thread خالی بود یا وجود نداشت، از Nitter کمک بگیر
         nitter_comments = get_replies_from_nitter(username, tweet_id)
         if nitter_comments:
             summary[-1] = "\nکامنت‌ها (از Nitter - %d مورد):\n%s" % (len(nitter_comments), "=" * 40)
