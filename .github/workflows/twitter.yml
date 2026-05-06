@@ -1,10 +1,10 @@
-name: "🐦 Twitter Downloader"
+name: "🐦 دانلود از توییتر"
 
 on:
   workflow_dispatch:
     inputs:
-      username:
-        description: 'نام کاربری توییتر (بدون @)'
+      tweet_url:
+        description: 'لینک کامل توییت (مثلاً https://x.com/username/status/123...)'
         required: true
 
 jobs:
@@ -19,15 +19,15 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: نصب ابزارهای مورد نیاز
-        run: pip install snscrape requests
+      - name: نصب نیازمندی‌ها
+        run: pip install requests
 
       - name: اجرای اسکریپت
-        run: python twitter_scraper.py "${{ github.event.inputs.username }}"
+        run: python twitter_scraper.py "${{ github.event.inputs.tweet_url }}"
 
       - name: ذخیره‌سازی تغییرات در ریپو
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add downloads/
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Add twitter data for @${{ github.event.inputs.username }}" && git push)
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Add twitter data for ${{ github.event.inputs.tweet_url }}" && git push)
