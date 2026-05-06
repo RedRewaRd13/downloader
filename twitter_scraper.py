@@ -1,4 +1,4 @@
-import requests, sys, os, re
+import requests, sys, os, re, subprocess
 
 def download_file(url, folder):
     os.makedirs(folder, exist_ok=True)
@@ -43,6 +43,8 @@ def get_replies_from_nitter(username, tweet_id):
 
 def main():
     tweet_url = sys.argv[1].strip()
+    password = sys.argv[2] if len(sys.argv) > 2 else ""
+
     if not tweet_url.startswith("http"):
         print("❌ لطفاً لینک کامل توییت را وارد کنید")
         sys.exit(1)
@@ -53,7 +55,6 @@ def main():
     text = tweet.get('text', '')
     tweet_id = tweet.get('id', '')
 
-    # پوشه جدید: twitter/<شناسه توییت>/
     base_folder = os.path.join("twitter", tweet_id)
     media_folder = os.path.join(base_folder, "media")
     os.makedirs(media_folder, exist_ok=True)
@@ -97,7 +98,25 @@ def main():
 
     with open(os.path.join(base_folder, "summary.txt"), "w", encoding="utf-8") as f:
         f.write("\n".join(summary))
-    print("✅ عملیات با موفقیت انجام شد!")
+
+    # اگه پسورد داده شده، فایل‌ها رو زیپ کن و رمز بذار
+    if password:
+        zip_filename = f"{base_folder}.zip"
+        # حذف زیپ قبلی (در صورت وجود)
+        if os.path.exists(zip_filename):
+            os.remove(zip_filename)
+        # ساخت زیپ با پسورد
+        subprocess.run(
+            ["zip", "-P", password, "-r", zip_filename, base_folder],
+            check=True
+        )
+        print(f"✅ فایل‌های توییت با پسورد در {zip_filename} ذخیره شد.")
+        # (اختیاری) حذف پوشه اصلی بدون رمز - اگر می‌خوای پوشه بمونه، این دو خط رو حذف کن
+        import shutil
+        shutil.rmtree(base_folder)
+        print("📁 پوشه اصلی (بدون رمز) حذف شد.")
+    else:
+        print("✅ فایل‌های توییت بدون پسورد ذخیره شد.")
 
 if __name__ == "__main__":
     main()
