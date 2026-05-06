@@ -1,4 +1,4 @@
-import requests, json, sys, os, re
+import requests, json, sys, os, re, xml.etree.ElementTree as ET
 
 def download_file(url, folder):
     os.makedirs(folder, exist_ok=True)
@@ -13,28 +13,24 @@ def download_file(url, folder):
     return path
 
 def get_latest_tweet_url(username):
-    """با استفاده از Nitter RSS، لینک آخرین توییت کاربر را پیدا می‌کند"""
-    nitter_instances = [
-        "https://nitter.net",
-        "https://nitter.1d4.us",
-        "https://nitter.kavin.rocks"
-    ]
+    """پیدا کردن لینک آخرین توییت با RSS رسمی توییتر (بدون نیاز به لاگین)"""
+    rss_url = f"https://syndication.twitter.com/srv/timeline-profile/screen-name/{username}"
     headers = {'User-Agent': 'Mozilla/5.0'}
-    for instance in nitter_instances:
-        try:
-            rss_url = f"{instance}/{username}/rss"
-            resp = requests.get(rss_url, headers=headers, timeout=15)
-            if resp.status_code == 200:
-                # اولین لینک داخل <link> در اولین <item>
-                match = re.search(r'<item>.*?<link>(.*?)</link>', resp.text, re.DOTALL)
-                if match:
-                    return match.group(1).strip()
-        except:
-            continue
+    try:
+        resp = requests.get(rss_url, headers=headers, timeout=15)
+        if resp.status_code == 200:
+            root = ET.fromstring(resp.content)
+            # اولین توییت در RSS اولین <item> است
+            for item in root.iter('item'):
+                link = item.find('link')
+                if link is not None and link.text:
+                    return link.text.strip()
+    except Exception as e:
+        print(f"⚠️ خطا در خواندن RSS: {e}")
     return None
 
 def get_tweet_details(tweet_url):
-    """دریافت اطلاعات توییت و مدیا با FxTwitter (رایگان)"""
+    """دریافت اطلاعات توییت و مدیا با FxTwitter"""
     tweet_id = tweet_url.strip().split('/')[-1]
     api_url = f"https://api.fxtwitter.com/status/{tweet_id}"
     resp = requests.get(api_url)
@@ -47,7 +43,8 @@ def get_replies(username, tweet_id):
     nitter_instances = [
         "https://nitter.net",
         "https://nitter.1d4.us",
-        "https://nitter.kavin.rocks"
+        "https://nitter.kavin.rocks",
+        "https://nitter.privacydev.net"
     ]
     headers = {'User-Agent': 'Mozilla/5.0'}
     for instance in nitter_instances:
@@ -60,12 +57,12 @@ def get_replies(username, tweet_id):
                 return [re.sub(r'<[^>]+>', '', c).strip() for c in comments[:100]]
         except:
             continue
-    return []
+    return []  # اگر هیچ نمونه‌ای در دسترس نبود
 
 def main():
     user_input = sys.argv[1].strip()
 
-    # تشخیص اینکه ورودی URL است یا اسم کاربری
+    # تشخیص ورودی: لینک کامل یا نام کاربری
     if user_input.startswith("http"):
         tweet_url = user_input
         username = tweet_url.split('/')[3]
@@ -82,7 +79,7 @@ def main():
     tweet_id = tweet.get('id', '')
     author = tweet.get('author', {}).get('screen_name', username)
 
-    # پوشه‌ها
+    # ساخت پوشه‌ها
     base_folder = f"downloads/twitter_{author}"
     media_folder = os.path.join(base_folder, "media")
     os.makedirs(media_folder, exist_ok=True)
@@ -110,7 +107,7 @@ def main():
     else:
         summary.append("\nکامنتی پیدا نشد.")
 
-    # ذخیره فایل
+    # ذخیره فایل نهایی
     with open(os.path.join(base_folder, "summary.txt"), "w", encoding="utf-8") as f:
         f.write("\n".join(summary))
     print("✅ عملیات با موفقیت انجام شد!")
