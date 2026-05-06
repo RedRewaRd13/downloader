@@ -12,15 +12,18 @@ def download_file(url, folder):
                     f.write(chunk)
     return path
 
-def get_tweet_details(tweet_url):
+def get_tweet_with_thread(tweet_url):
+    """دریافت اطلاعات توییت + رشته مکالمه (Thread) از FxTwitter"""
     tweet_id = tweet_url.strip().split('/')[-1]
     fx_url = f"https://api.fxtwitter.com/status/{tweet_id}"
     resp = requests.get(fx_url)
     if resp.status_code != 200:
         raise Exception(f"خطا در دریافت توییت: {resp.status_code}")
-    return resp.json().get('tweet', {})
+    data = resp.json()
+    return data.get('tweet', {}), data.get('thread', [])
 
-def get_replies(username, tweet_id):
+def get_replies_from_nitter(username, tweet_id):
+    """پشتیبان: دریافت کامنت‌ها از Nitter (در صورت در دسترس بودن)"""
     nitter_instances = [
         "https://nitter.net",
         "https://nitter.1d4.us",
@@ -43,11 +46,12 @@ def get_replies(username, tweet_id):
 def main():
     tweet_url = sys.argv[1].strip()
     if not tweet_url.startswith("http"):
-        print("❌ لطفاً لینک کامل توییت را وارد کنید (مثلاً https://x.com/username/status/123)")
+        print("❌ لطفاً لینک کامل توییت را وارد کنید")
         sys.exit(1)
 
     username = tweet_url.split('/')[3]
-    tweet = get_tweet_details(tweet_url)
+    tweet, thread = get_tweet_with_thread(tweet_url)
+
     text = tweet.get('text', '')
     tweet_id = tweet.get('id', '')
 
@@ -62,19 +66,39 @@ def main():
     summary.append(f"متن:\n{text}")
     summary.append("-" * 50)
 
+    # دانلود عکس‌ها و ویدیوهای توییت اصلی
     for media in tweet.get('media', {}).get('all', []):
         url = media.get('url')
         if url:
             path = download_file(url, media_folder)
             summary.append(f"مدیا: {os.path.basename(path)}")
 
-    replies = get_replies(username, tweet_id)
-    if replies:
-        summary.append("\nکامنت‌ها:\n" + "=" * 40)
-        for i, r in enumerate(replies, 1):
-            summary.append(f"\n{i}. {r}")
+    # کامنت‌ها: اول از Thread خود FxTwitter
+    comments = []
+    if thread:
+        # thread شامل توییت اصلی هم هست، فیلترش می‌کنیم
+        for t in thread:
+            tid = t.get('id')
+            if tid and tid != tweet_id:
+                author = t.get('author', {}).get('screen_name', 'unknown')
+                txt = t.get('text', '')
+                comments.append(f"@{author}: {txt}")
+        summary.append(f"\nکامنت‌ها (از Thread - {len(comments)} مورد):\n" + "=" * 40)
     else:
-        summary.append("\nکامنتی پیدا نشد.")
+        summary.append("\nکامنت‌ها (Thread در دسترس نیست):\n" + "=" * 40)
+
+    if comments:
+        for i, c in enumerate(comments, 1):
+            summary.append(f"{i}. {c}")
+    else:
+        # اگر Thread خالی بود یا وجود نداشت، از Nitter کمک بگیر
+        nitter_comments = get_replies_from_nitter(username, tweet_id)
+        if nitter_comments:
+            summary[-1] = "\nکامنت‌ها (از Nitter - %d مورد):\n%s" % (len(nitter_comments), "=" * 40)
+            for i, c in enumerate(nitter_comments, 1):
+                summary.append(f"{i}. {c}")
+        else:
+            summary.append("هیچ کامنتی یافت نشد.")
 
     with open(os.path.join(base_folder, "summary.txt"), "w", encoding="utf-8") as f:
         f.write("\n".join(summary))
