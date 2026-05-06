@@ -1,4 +1,4 @@
-import requests, json, sys, os, re, xml.etree.ElementTree as ET
+import requests, json, sys, os, re
 
 def download_file(url, folder):
     os.makedirs(folder, exist_ok=True)
@@ -13,20 +13,23 @@ def download_file(url, folder):
     return path
 
 def get_latest_tweet_url(username):
-    """پیدا کردن لینک آخرین توییت با RSS رسمی توییتر (بدون نیاز به لاگین)"""
-    rss_url = f"https://syndication.twitter.com/srv/timeline-profile/screen-name/{username}"
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    """
+    پیدا کردن لینک آخرین توییت با استفاده از API رایگان FxTwitter
+    این روش بدون هیچ احراز هویتی کار می‌کند.
+    """
+    api_url = f"https://api.fxtwitter.com/profile/{username}/tweets?count=1"
     try:
-        resp = requests.get(rss_url, headers=headers, timeout=15)
+        resp = requests.get(api_url, timeout=15)
         if resp.status_code == 200:
-            root = ET.fromstring(resp.content)
-            # اولین توییت در RSS اولین <item> است
-            for item in root.iter('item'):
-                link = item.find('link')
-                if link is not None and link.text:
-                    return link.text.strip()
+            data = resp.json()
+            # ساختار پاسخ: {'tweets': [ ... ], 'user': ...}
+            tweets = data.get('tweets', [])
+            if tweets:
+                tweet_id = tweets[0].get('id')
+                author = tweets[0].get('author', {}).get('screen_name', username)
+                return f"https://x.com/{author}/status/{tweet_id}"
     except Exception as e:
-        print(f"⚠️ خطا در خواندن RSS: {e}")
+        print(f"⚠️ خطا در اتصال به FxTwitter: {e}")
     return None
 
 def get_tweet_details(tweet_url):
@@ -79,7 +82,7 @@ def main():
     tweet_id = tweet.get('id', '')
     author = tweet.get('author', {}).get('screen_name', username)
 
-    # ساخت پوشه‌ها
+    # پوشه‌ها
     base_folder = f"downloads/twitter_{author}"
     media_folder = os.path.join(base_folder, "media")
     os.makedirs(media_folder, exist_ok=True)
@@ -105,9 +108,9 @@ def main():
         for i, r in enumerate(replies, 1):
             summary.append(f"\n{i}. {r}")
     else:
-        summary.append("\nکامنتی پیدا نشد.")
+        summary.append("\nکامنتی پیدا نشد (ممکن است نمونه‌های Nitter در دسترس نباشند).")
 
-    # ذخیره فایل نهایی
+    # ذخیره فایل
     with open(os.path.join(base_folder, "summary.txt"), "w", encoding="utf-8") as f:
         f.write("\n".join(summary))
     print("✅ عملیات با موفقیت انجام شد!")
